@@ -149,6 +149,7 @@ int LbScriptLog(unsigned long line,const char *format, ...) __attribute__ ((form
 int LbConfigLog(unsigned long line,const char *format, ...) __attribute__ ((format(printf, 2, 3), nonnull(2)));
 
 int LbErrorLogSetup(const char *directory, const char *filename, TbBool flag);
+int LbErrorLogSetupAbsolute(const char *fullpath, TbBool flag);
 int LbErrorLogClose(void);
 
 int LbLogClose(struct TbLog *log) __attribute__ ((nonnull(1)));

@@ -39,6 +39,14 @@
 #endif
 #if defined(BF_POSIX_CRASH)
 #include <execinfo.h>
+// macOS's <ucontext.h> #errors out unless _XOPEN_SOURCE is defined (the ucontext
+// routines are deprecated and gated behind it). Define it HERE, immediately before that
+// include, on purpose: defining it at the top of the file (before <execinfo.h>/<dlfcn.h>)
+// would put macOS into strict X/Open mode for those headers and hide the BSD extensions
+// we rely on (backtrace(), dladdr()). Do not hoist this.
+#if defined(__APPLE__) && !defined(_XOPEN_SOURCE)
+#define _XOPEN_SOURCE 700
+#endif
 #include <ucontext.h>
 #include <unistd.h>
 #include <dlfcn.h>
@@ -423,6 +431,16 @@ static void log_posix_context(void *context)
     LbErrorLog("Context PC=%p SP=%p.\n",
         (void *)uctx->uc_mcontext.pc,
         (void *)uctx->uc_mcontext.sp);
+#elif defined(__APPLE__) && defined(__aarch64__)
+    ucontext_t *uctx = (ucontext_t *)context;
+    LbErrorLog("Context PC=%p SP=%p.\n",
+        (void *)uctx->uc_mcontext->__ss.__pc,
+        (void *)uctx->uc_mcontext->__ss.__sp);
+#elif defined(__APPLE__) && defined(__x86_64__)
+    ucontext_t *uctx = (ucontext_t *)context;
+    LbErrorLog("Context RIP=%p RSP=%p.\n",
+        (void *)uctx->uc_mcontext->__ss.__rip,
+        (void *)uctx->uc_mcontext->__ss.__rsp);
 #else
     (void)context;
 #endif

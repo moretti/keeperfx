@@ -178,7 +178,7 @@ src/kfx/lense/MistEffect.cpp \
 src/kfx/lense/OverlayEffect.cpp \
 src/kfx/lense/PaletteEffect.cpp \
 src/light_data.c \
-src/linux.cpp \
+src/posix.cpp \
 src/lua_api.c \
 src/lua_api_lens.c \
 src/lua_api_map.c \
