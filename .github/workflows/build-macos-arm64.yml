@@ -1,0 +1,148 @@
+name: Build macOS (Apple Silicon)
+
+# Native macOS / Apple Silicon (arm64) build, mirroring the project's existing
+# Windows/Linux CI: it produces WORKFLOW ARTIFACTS only — never a GitHub Release.
+# Just like the Windows side, turning a build into a published download (the
+# Releases page) stays a manual maintainer step.
+#
+# Triggers mirror the three existing patterns:
+#   * pull_request (ready_for_review / review_requested) -> "Prototype" build,
+#     so a reviewer can download the updated .dmg     (cf. build-prototype.yml)
+#   * push to master                                   -> "Alpha" build
+#     (cf. build-alpha-patch-signed.yml; macOS has no SignPath equivalent — see below)
+#   * workflow_dispatch                                -> "Release" build
+#     (cf. build-release-patch-signed.yml)
+#
+# Each run uploads three artifacts: KeeperFX.dmg, KeeperFX.app.tar.gz, and the raw
+# keeperfx arm64 binary. They live on the Actions run, need a GitHub login to
+# download, and expire after retention-days.
+
+on:
+  pull_request:
+    types: [ready_for_review, review_requested]
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      data_tag:
+        description: "Pin game data to a KeeperFX release tag (blank = latest)"
+        required: false
+        default: ""
+
+jobs:
+  build-macos-arm64:
+    name: "Build macOS arm64 (.dmg / .app / binary)"
+    # macos-14 and later are Apple Silicon (arm64) runners.
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build-time dependencies (Homebrew)
+        run: |
+          set -eux
+          brew update
+          # Same set as docs/macos_port.md §1. dylibbundler + innoextract are
+          # packaging-only; ffmpeg@6/openal-soft are keg-only (macos.mk handles their paths).
+          brew install \
+            pkg-config cmake \
+            sdl2 sdl2_image sdl2_mixer sdl2_net \
+            ffmpeg@6 openal-soft luajit libspng minizip miniupnpc libnatpmp \
+            dylibbundler innoextract
+
+      # Cache the vendored deps (centijson / astronomy / enet6) that macos.mk
+      # clones + builds from pinned source. Key on macos.mk so a ref bump busts it.
+      # Restore here, but SAVE only after a successful build (see the save step below):
+      # the dep .a/header rules only test for file existence, so caching a partial tree
+      # from a failed run would poison every later run until the key changes. No
+      # restore-keys on purpose — a fuzzy hit could restore deps built from stale refs.
+      - name: Restore vendored deps cache
+        id: deps-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            deps/centijson
+            deps/astronomy
+            deps/enet6
+          key: macos-arm64-deps-${{ hashFiles('macos.mk') }}
+
+      - name: Determine build channel + version
+        id: vars
+        run: |
+          set -eux
+          VER_MAJOR=$(grep -E '^VER_MAJOR=' version.mk | cut -d= -f2)
+          VER_MINOR=$(grep -E '^VER_MINOR=' version.mk | cut -d= -f2)
+          VER_RELEASE=$(grep -E '^VER_RELEASE=' version.mk | cut -d= -f2)
+          BUILD_NUMBER=$(git rev-list --count origin/master)
+          case "${{ github.event_name }}" in
+            pull_request)
+              SUFFIX="macOS_Prototype_$(git rev-parse --short=7 ${{ github.event.pull_request.head.sha }})" ;;
+            push)
+              SUFFIX="macOS_Alpha" ;;
+            *)
+              SUFFIX="macOS" ;;
+          esac
+          ARTIFACT_NAME="keeperfx-macos_arm64-${VER_MAJOR}_${VER_MINOR}_${VER_RELEASE}_${BUILD_NUMBER}_${SUFFIX}"
+          {
+            echo "build_number=$BUILD_NUMBER"
+            echo "suffix=$SUFFIX"
+            echo "artifact_name=$ARTIFACT_NAME"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build .app + .dmg (make -f macos.mk dist)
+        env:
+          # Raises the GitHub API rate limit for the game-data fetch in the `data` target.
+          GITHUB_TOKEN: ${{ github.token }}
+          KFX_DATA_TAG: ${{ github.event.inputs.data_tag }}
+        run: |
+          set -eux
+          make -f macos.mk dist \
+            BUILD_NUMBER="${{ steps.vars.outputs.build_number }}" \
+            VER_SUFFIX="${{ steps.vars.outputs.suffix }}" \
+            -j"$(sysctl -n hw.ncpu)"
+
+      # Persist the freshly built deps only on a successful build, and only when the
+      # restore was not an exact hit — so we never cache a partial/corrupt tree.
+      - name: Save vendored deps cache
+        if: success() && steps.deps-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            deps/centijson
+            deps/astronomy
+            deps/enet6
+          key: ${{ steps.deps-cache.outputs.cache-primary-key }}
+
+      - name: Stage artifacts
+        run: |
+          set -eux
+          mkdir -p out
+          cp bin/macos-arm64/KeeperFX.dmg out/
+          cp bin/macos-arm64/keeperfx   out/keeperfx
+          # Tar the .app so executable bits, internal symlinks and the ad-hoc
+          # code signature survive the artifact round-trip (raw upload-artifact
+          # re-zips and can strip them, breaking the bundle).
+          tar -C bin/macos-arm64 -czf out/KeeperFX.app.tar.gz KeeperFX.app
+
+      - name: Upload .dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.vars.outputs.artifact_name }}-dmg
+          path: out/KeeperFX.dmg
+          retention-days: 30
+
+      - name: Upload .app bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.vars.outputs.artifact_name }}-app
+          path: out/KeeperFX.app.tar.gz
+          retention-days: 30
+
+      - name: Upload raw binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.vars.outputs.artifact_name }}-binary
+          path: out/keeperfx
+          retention-days: 30
