@@ -699,7 +699,13 @@ TbScreenMode setup_screen_mode(TbScreenMode nmode, TbBool failsafe)
   }
   LbScreenClear(0);
   LbScreenSwap();
-  update_screen_mode_data(new_mdinfo->Width, new_mdinfo->Height);
+  // Derive the engine's render size (MyScreenWidth/Height and all scaling factors) from the
+  // live draw surface, not the requested mode. On a macOS Retina display LbScreenSetup sizes
+  // the surface to the real backing store, which can differ from new_mdinfo->Width/Height;
+  // using the mode size here would make the rasterizer write past the smaller surface and
+  // corrupt adjacent heap. Off macOS PhysicalScreenWidth/Height equal the mode size, so this
+  // is a no-op there.
+  update_screen_mode_data(lbDisplay.PhysicalScreenWidth, lbDisplay.PhysicalScreenHeight);
   if (parchment_loaded)
     reload_parchment_file(hi_res);
   reinitialise_eye_lens(lens_mem);
@@ -863,7 +869,8 @@ TbScreenMode setup_screen_mode_minimal(TbScreenMode nmode)
   }
   LbScreenClear(0);
   LbScreenSwap();
-  update_screen_mode_data(new_mdinfo->Width, new_mdinfo->Height);
+  // See setup_screen_mode(): render at the live surface size, not the requested mode.
+  update_screen_mode_data(lbDisplay.PhysicalScreenWidth, lbDisplay.PhysicalScreenHeight);
   lbDisplay.DrawFlags = flg_mem;
   force_video_mode_reset = false;
   return nmode;
@@ -903,7 +910,8 @@ TbScreenMode setup_screen_mode_zero(TbScreenMode nmode)
       ERRORLOG("Unable to setup screen resolution %s (mode %d)", new_mdinfo->Desc,(int)nmode);
       return Lb_SCREEN_MODE_INVALID;
   }
-  update_screen_mode_data(new_mdinfo->Width, new_mdinfo->Height);
+  // See setup_screen_mode(): render at the live surface size, not the requested mode.
+  update_screen_mode_data(lbDisplay.PhysicalScreenWidth, lbDisplay.PhysicalScreenHeight);
   force_video_mode_reset = true;
   return nmode;
 }

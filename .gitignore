@@ -40,9 +40,11 @@ res/keeperfx_icon.ico
 /deps/miniupnpc
 /deps/libnatpmp
 /deps/*.tar.gz
+/deps/dl
 /cppcheck.cache
 /src/ver_defs.h
 keeperfx.log
 crash_log.txt
 .local/
 .vscode/compile_and_copy_files.ps1
+.DS_Store

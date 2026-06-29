@@ -325,6 +325,24 @@ int LbErrorLogSetup(const char *directory, const char *filename, TbBool flag)
   return result;
 }
 
+// Set up the error log from an already-complete absolute path, bypassing the
+// CWD-prepend and directory join in LbFileMakeFullPath (whose path-join drops the
+// last char of a multi-char directory). Used by the macOS .app build, which logs
+// into an absolute Application Support path.
+int LbErrorLogSetupAbsolute(const char *fullpath, TbBool flag)
+{
+  if ( error_log_initialised ) return -1;
+  if ((fullpath == NULL) || (strlen(fullpath) == 0)) return -1;
+  ulong flags = (flag == 0) + 1;
+  flags |= LbLog_TimeInHeader | LbLog_DateInHeader | 0x04;
+  if ( LbLogSetup(&error_log, fullpath, flags) == 1 )
+  {
+    error_log_initialised = 1;
+    return 1;
+  }
+  return -1;
+}
+
 int LbErrorLogClose(void)
 {
     if (!error_log_initialised)

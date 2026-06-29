@@ -598,11 +598,25 @@ TbResult LbScreenSetup(TbScreenMode mode, TbScreenCoord width, TbScreenCoord hei
         ERRORLOG("Failed to initialize mode %d (%s): %s", (int)mode, mdinfo->Desc, SDL_GetError());
         return Lb_FAIL;
     }
+    // Render dimensions = the actual draw/window surface size, which the engine blits to
+    // 1:1 in LbScreenSwap(). On most platforms this equals the requested mode size; on a
+    // macOS high-DPI (Retina) display the real surface is larger in pixels than the mode
+    // requested via SDL_GetDesktopDisplayMode, so the engine must render at the surface
+    // size or the image is cropped. Use the surface dimensions WITHOUT writing them back
+    // into mdinfo: that struct is the shared, persistent registered-mode table
+    // (&lbScreenModeInfo[mode]); overwriting it corrupts the configured mode and, on a
+    // later re-setup of the same mode, re-doubles the size on each toggle.
+    TbScreenCoord setup_width = mdinfo->Width;
+    TbScreenCoord setup_height = mdinfo->Height;
+#if defined(__APPLE__)
+    setup_width = lbScreenSurface->w;
+    setup_height = lbScreenSurface->h;
+#endif
 
     // Create secondary surface if necessary, that is if BPP != lbEngineBPP.
     if (mdinfo->BitsPerPixel != lbEngineBPP)
     {
-        lbDrawSurface = SDL_CreateRGBSurface(0, mdinfo->Width, mdinfo->Height, lbEngineBPP, 0, 0, 0, 0);
+        lbDrawSurface = SDL_CreateRGBSurface(0, setup_width, setup_height, lbEngineBPP, 0, 0, 0, 0);
         if (lbDrawSurface == NULL) {
             ERRORLOG("Can't create secondary surface for mode %d (%s): %s", (int)mode, mdinfo->Desc, SDL_GetError());
             LbScreenReset(false);
@@ -614,13 +628,13 @@ TbResult LbScreenSetup(TbScreenMode mode, TbScreenCoord width, TbScreenCoord hei
     lbDisplay.DrawFlags = 0;
     lbDisplay.DrawColour = 0;
     lbDisplayEx.ShadowColour = 0;
-    lbDisplay.PhysicalScreenWidth = mdinfo->Width;
-    lbDisplay.PhysicalScreenHeight = mdinfo->Height;
+    lbDisplay.PhysicalScreenWidth = setup_width;
+    lbDisplay.PhysicalScreenHeight = setup_height;
     lbDisplay.ScreenMode = mode;
     lbDisplay.PhysicalScreen = NULL;
     // The graphics screen size should be really taken after screen is locked, but it seem just getting in now will work too
     lbDisplay.GraphicsScreenWidth = lbDrawSurface->pitch;
-    lbDisplay.GraphicsScreenHeight = mdinfo->Height;
+    lbDisplay.GraphicsScreenHeight = setup_height;
     lbDisplay.WScreen = NULL;
     lbDisplay.GraphicsWindowPtr = NULL;
     lbScreenInitialised = true;
@@ -629,8 +643,8 @@ TbResult LbScreenSetup(TbScreenMode mode, TbScreenCoord width, TbScreenCoord hei
     {
         LbPaletteSet(palette);
     }
-    LbScreenSetGraphicsWindow(0, 0, mdinfo->Width, mdinfo->Height);
-    LbTextSetWindow(0, 0, mdinfo->Width, mdinfo->Height);
+    LbScreenSetGraphicsWindow(0, 0, setup_width, setup_height);
+    LbTextSetWindow(0, 0, setup_width, setup_height);
     SYNCDBG(8,"Done filling display properties struct");
     if ( LbMouseIsInstalled() )
     {
@@ -641,7 +655,7 @@ TbResult LbScreenSetup(TbScreenMode mode, TbScreenCoord width, TbScreenCoord hei
         }
         if (!IsMouseInsideWindow())
         {
-            SDL_WarpMouseInWindow(lbWindow, mdinfo->Width / 2, mdinfo->Height / 2);
+            SDL_WarpMouseInWindow(lbWindow, setup_width / 2, setup_height / 2);
         }
     }
 

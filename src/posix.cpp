@@ -14,9 +14,24 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <fnmatch.h>
+#ifdef __APPLE__
+#include <sys/sysctl.h>
+#endif
 
 extern "C" const char * get_os_version() {
+#ifdef __APPLE__
+    static char buffer[256];
+    char version[64] = {0};
+    size_t len = sizeof(version);
+    if (sysctlbyname("kern.osproductversion", version, &len, nullptr, 0) == 0) {
+        snprintf(buffer, sizeof(buffer), "macOS %s", version);
+    } else {
+        snprintf(buffer, sizeof(buffer), "macOS");
+    }
+    return buffer;
+#else
     return "Linux";
+#endif
 }
 
 extern "C" const void * get_image_base()
@@ -41,13 +56,13 @@ extern "C" void install_exception_handler()
 
 extern "C" int steam_api_init()
 {
-    // Steam not supported on Linux
+    // Steam not supported on this POSIX (Linux/macOS) build
     return 0;
 }
 
 extern "C" void steam_api_shutdown()
 {
-    // Steam not supported on Linux
+    // Steam not supported on this POSIX (Linux/macOS) build
 }
 
 extern "C" void SetRedbookVolume(SoundVolume)

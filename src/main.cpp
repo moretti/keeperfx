@@ -4061,6 +4061,117 @@ short reset_game(void)
     return 1;
 }
 
+#ifdef __APPLE__
+#include <unistd.h>
+#include <sys/stat.h>
+#include <stdlib.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <crt_externs.h>
+
+// Run a program with an explicit argv vector, WITHOUT a shell. Paths are passed through
+// literally (no word-splitting and no command injection from a crafted $HOME or argv[0]
+// containing spaces, quotes, $ or backticks). Returns the child's exit code, or -1 if it
+// could not be spawned or did not exit normally.
+static int macos_run(const char *const argv[])
+{
+    pid_t pid;
+    if (posix_spawn(&pid, argv[0], NULL, NULL, (char *const *)argv, *_NSGetEnviron()) != 0)
+        return -1;
+    int status = 0;
+    if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status))
+        return -1;
+    return WEXITSTATUS(status);
+}
+
+// macOS .app builds run from a read-only bundle and (in /Applications) a non-writable
+// working directory. Relocate KeeperFX's runtime directory to a per-user writable root
+// under ~/Library/Application Support, seeded once from the bundle's Resources. Saves,
+// screenshots, config and logs then live there automatically (they all hang off
+// keeper_runtime_directory). The user adds the original DK data there too, alongside the
+// seeded KeeperFX data — one merged writable root, matching the Windows layout.
+// Returns the writable dir, or NULL for non-bundle (dev/flat) builds, which keep the
+// executable-relative directory. The seed/copy happens once (cached across calls).
+static const char *macos_app_support_dir(const char *argv0)
+{
+    static char dir[152];
+    static int resolved = 0;
+    static const char *result = NULL;
+    if (resolved)
+        return result;
+    resolved = 1;
+
+    char exedir[1024];
+    snprintf(exedir, sizeof(exedir), "%s", argv0 ? argv0 : "");
+    char *slash = strrchr(exedir, '/');
+    if (slash == NULL)
+        return NULL;
+    *slash = '\0';
+
+    // Only relocate when launched from inside a .app bundle (…/Contents/MacOS).
+    static const char suffix[] = "/Contents/MacOS";
+    size_t dlen = strlen(exedir);
+    size_t slen = sizeof(suffix) - 1;
+    if (dlen < slen || strcmp(exedir + dlen - slen, suffix) != 0)
+        return NULL;
+
+    char resources[1100];
+    snprintf(resources, sizeof(resources), "%.*s/Contents/Resources", (int)(dlen - slen), exedir);
+
+    const char *home = getenv("HOME");
+    if (home == NULL || home[0] == '\0')
+        home = ".";
+    snprintf(dir, sizeof(dir), "%s/Library/Application Support/KeeperFX", home);
+
+    const char *mkdir_argv[] = {"/bin/mkdir", "-p", dir, NULL};
+    if (macos_run(mkdir_argv) != 0)
+        return NULL;
+
+    // Seed the bundle's KeeperFX data into the writable root on first run. The sentinel is
+    // a marker written only AFTER a successful copy — not the mere presence of fxdata/ — so
+    // an interrupted or failed copy is retried next launch instead of leaving a
+    // half-populated tree that looks complete.
+    char marker[200];
+    snprintf(marker, sizeof(marker), "%s/.seeded", dir);
+    struct stat st;
+    if (stat(marker, &st) != 0)
+    {
+        // An install made before this marker existed already has the data; just mark it
+        // (re-copying would clobber the user's keeperfx.cfg with the bundle default).
+        char fxdata[200];
+        snprintf(fxdata, sizeof(fxdata), "%s/fxdata", dir);
+        bool seeded = (stat(fxdata, &st) == 0);
+        if (!seeded)
+        {
+            // Trailing slash on the source copies its CONTENTS into the destination.
+            char src[1110];
+            snprintf(src, sizeof(src), "%s/", resources);
+            const char *cp_argv[] = {"/bin/cp", "-R", src, dir, NULL};
+            seeded = (macos_run(cp_argv) == 0);
+        }
+        if (seeded)
+        {
+            FILE *mf = fopen(marker, "w");
+            if (mf != NULL)
+                fclose(mf);
+        }
+        else
+        {
+            fprintf(stderr, "KeeperFX: failed to seed game data from the app bundle into %s\n", dir);
+        }
+    }
+
+    // The engine expects its data dir to be the current working directory (it resets
+    // keeper_runtime_directory to "." in load_configuration, and INSTALL_PATH is "./").
+    // A double-clicked .app starts with CWD="/", so make the writable root the CWD.
+    if (chdir(dir) != 0)
+        return NULL;
+
+    result = dir;
+    return result;
+}
+#endif
+
 short process_command_line(unsigned short argc, char *argv[])
 {
   char fullpath[CMDLN_MAXLEN+1];
@@ -4073,6 +4184,14 @@ short process_command_line(unsigned short argc, char *argv[])
       *endpos='\0';
   else
       strcpy(keeper_runtime_directory, ".");
+
+#ifdef __APPLE__
+  {
+      const char *macos_dir = macos_app_support_dir(argv[0]);
+      if (macos_dir != NULL)
+          snprintf(keeper_runtime_directory, sizeof(keeper_runtime_directory), "%s", macos_dir);
+  }
+#endif
 
   AssignCpuKeepers = 0;
   SoundDisabled = 0;
@@ -4409,6 +4528,21 @@ int LbBullfrogMain(unsigned short argc, char *argv[])
 
     // Determine correct log file based on command line flags
     const char* selected_log_file_name = determine_log_filename(argc, argv);
+#ifdef __APPLE__
+    // In a .app bundle the working dir ("/") isn't writable; log into the per-user
+    // Application Support root instead (also seeds the runtime dir on first run).
+    const char* macos_dir = macos_app_support_dir(argv[0]);
+    if (macos_dir != NULL)
+    {
+        // Sized to hold the full runtime dir (up to sizeof(keeper_runtime_directory)-1)
+        // plus the log filename — a bare DISKPATH_SIZE buffer is smaller than the dir and
+        // would truncate the path before the runtime dir does.
+        static char macos_log_path[sizeof(keeper_runtime_directory) + DISKPATH_SIZE];
+        snprintf(macos_log_path, sizeof(macos_log_path), "%s/%s", macos_dir, selected_log_file_name);
+        LbErrorLogSetupAbsolute(macos_log_path, 5);
+    }
+    else
+#endif
     LbErrorLogSetup("/", selected_log_file_name, 5);
 
     retval = process_command_line(argc,argv);
