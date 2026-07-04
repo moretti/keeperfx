@@ -45,6 +45,10 @@ extern "C" {
 // Map coords are 256 per subtile; used to report the camera focus in fractional subtiles.
 #define PARITY_COORDS_PER_SUBTILE 256.0
 
+// Highest subtile index on either axis. A DK map is 85 slabs * 3 = 255 subtiles per side (indices
+// 0..255 including the border), so the oracle window is clamped here to stay inside the map arrays.
+#define PARITY_MAX_SUBTILE 255
+
 // Fixed capture zoom (DK's code-default camera zoom, == keeper-rx's KEEPER_GAME_ZOOM default). Forcing
 // it every shot makes the frame independent of the persisted/drifted zoom and of any live mouse-wheel
 // input, and lines the shot up with our matched render.
@@ -189,6 +193,90 @@ static void parity_write_metadata(const char* path, LevelNumber map, GameTurn ti
     FTESTLOG("parity: wrote '%s'", path);
 }
 
+// Per-frame numeric oracle: the game state the screenshot represents, so keeper-rx can check its render
+// against exact engine numbers instead of only a blunt pixel diff. The visible area is the focus subtile
+// +/- cells_away — the radius the engine actually drew this frame (engine_render.c draw_view), so the
+// window is derived from the render, not guessed. It dumps the light SOURCES (inputs) and the per-subtile
+// lightness + per-thing shade (the OUTPUTS the picture is shaded from); comparing both localises a
+// lighting mismatch to setup (inputs differ) vs computation (inputs match, output differs).
+static void parity_write_oracle(const char* path, const struct Camera* cam, GameTurn tick)
+{
+    FILE* f = fopen(path, "w");
+    if (f == NULL) { FTESTLOG("parity: failed to open '%s'", path); return; }
+
+    MapSubtlCoord fx = cam->mappos.x.val >> 8;
+    MapSubtlCoord fy = cam->mappos.y.val >> 8;
+    long r = cells_away; // the view radius the engine drew with this frame
+    MapSubtlCoord x0 = (fx - r < 0) ? 0 : fx - r;
+    MapSubtlCoord y0 = (fy - r < 0) ? 0 : fy - r;
+    MapSubtlCoord x1 = (fx + r > PARITY_MAX_SUBTILE) ? PARITY_MAX_SUBTILE : fx + r;
+    MapSubtlCoord y1 = (fy + r > PARITY_MAX_SUBTILE) ? PARITY_MAX_SUBTILE : fy + r;
+
+    fprintf(f, "{\n");
+    fprintf(f, "  \"tick\": %ld,\n", (long)tick);
+    fprintf(f, "  \"focusSubtile\": [%d, %d],\n", (int)fx, (int)fy);
+    fprintf(f, "  \"window\": { \"min\": [%d, %d], \"size\": [%d, %d] },\n",
+        (int)x0, (int)y0, (int)(x1 - x0 + 1), (int)(y1 - y0 + 1));
+
+    // Light sources whose centre lies in the window (the inputs).
+    fprintf(f, "  \"lights\": [");
+    int first = 1;
+    for (int li = 1; li < LIGHTS_COUNT; li++)
+    {
+        struct Light* L = &game.lish.lights[li];
+        if ((L->flags & LgtF_Allocated) == 0) continue;
+        MapSubtlCoord lx = L->mappos.x.val >> 8, ly = L->mappos.y.val >> 8;
+        if (lx < x0 || lx > x1 || ly < y0 || ly > y1) continue;
+        fprintf(f, "%s\n    { \"idx\": %d, \"kind\": \"%s\", \"stl\": [%d, %d], \"intensity\": %d, \"range\": %d, \"radius\": %d, \"flags\": %d }",
+            first ? "" : ",", li, (L->flags & LgtF_Dynamic) ? "dynamic" : "static",
+            (int)lx, (int)ly, (int)L->intensity, (int)L->range, (int)L->radius, (int)L->flags);
+        first = 0;
+    }
+    fprintf(f, first ? "],\n" : "\n  ],\n");
+
+    // Objects and creatures inside the window, with the engine shade each is drawn at (an output).
+    fprintf(f, "  \"things\": [");
+    first = 1;
+    const ThingClass classes[] = { TCls_Object, TCls_Creature };
+    for (int ci = 0; ci < 2; ci++)
+    {
+        struct StructureList* slist = get_list_for_thing_class(classes[ci]);
+        if (slist == NULL) continue;
+        long i = slist->index;
+        unsigned long k = 0;
+        while (i != 0)
+        {
+            struct Thing* thing = thing_get(i);
+            if (thing_is_invalid(thing)) break;
+            i = thing->next_of_class;
+            MapSubtlCoord tx = thing->mappos.x.val >> 8, ty = thing->mappos.y.val >> 8;
+            if (tx >= x0 && tx <= x1 && ty >= y0 && ty <= y1)
+            {
+                fprintf(f, "%s\n    { \"class\": %d, \"model\": %d, \"stl\": [%d, %d], \"shade\": %d }",
+                    first ? "" : ",", (int)thing->class_id, (int)thing->model,
+                    (int)tx, (int)ty, (int)get_thing_shade(thing));
+                first = 0;
+            }
+            if (++k > slist->count + 1) break;
+        }
+    }
+    fprintf(f, first ? "],\n" : "\n  ],\n");
+
+    // Per-subtile lightness over the window, row-major (y outer, x inner) — the output the terrain is
+    // shaded with, so a keeper-rx test can diff its own lighting subtile-by-subtile.
+    fprintf(f, "  \"lightmap\": [");
+    for (MapSubtlCoord sy = y0; sy <= y1; sy++)
+    {
+        fprintf(f, "%s\n    [", (sy == y0) ? "" : ",");
+        for (MapSubtlCoord sx = x0; sx <= x1; sx++)
+            fprintf(f, "%s%d", (sx == x0) ? "" : ",", (int)get_subtile_lightness(&game.lish, sx, sy));
+        fprintf(f, "]");
+    }
+    fprintf(f, "\n  ]\n}\n");
+    fclose(f);
+    FTESTLOG("parity: wrote '%s'", path);
+}
+
 TbBool ftest_parity_screenshot_init(void)
 {
     // Fire every turn from the start; the action self-terminates after the last shot tick.
@@ -284,8 +372,10 @@ FTestActionResult ftest_parity_screenshot_action001__capture(struct FTestActionA
         snprintf(base, sizeof(base), "%s/t%ld", parity_out_dir(), (long)tick);
         char png_path[300];
         char json_path[300];
+        char oracle_path[320];
         snprintf(png_path, sizeof(png_path), "%s.png", base);
         snprintf(json_path, sizeof(json_path), "%s.json", base);
+        snprintf(oracle_path, sizeof(oracle_path), "%s.oracle.json", base);
 
         if (parity_save_png_opaque(png_path))
             FTESTLOG("parity: shot tick %ld -> '%s'", (long)tick, png_path);
@@ -293,6 +383,7 @@ FTestActionResult ftest_parity_screenshot_action001__capture(struct FTestActionA
             FTESTLOG("parity: FAILED screenshot at tick %ld", (long)tick);
 
         parity_write_metadata(json_path, map, tick, cam, width, height);
+        parity_write_oracle(oracle_path, cam, tick);
     }
 
     if (tick < PARITY_LAST_TICK)
