@@ -147,6 +147,7 @@ void process_keeper_sprite(short x, short y, unsigned short a3, short kspr_angle
 void draw_status_sprites(long a1, long a2, struct Thing *thing);
 void draw_map_volume_box(long cor1_x, long cor1_y, long cor2_x, long cor2_y, long floor_height_z, unsigned char color);
 
+unsigned short get_thing_shade(struct Thing *thing); // exposed for the oracle-dump ftest (keeper-rx)
 void update_engine_settings(struct PlayerInfo *player);
 void draw_view(struct Camera *cam, unsigned char a2);
 void draw_frontview_engine(struct Camera *cam);

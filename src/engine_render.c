@@ -4919,7 +4919,7 @@ static void process_keeper_flame_on_sprite(struct BucketKindJontySprite* jspr, l
     }
 }
 
-static unsigned short get_thing_shade(struct Thing* thing);
+unsigned short get_thing_shade(struct Thing* thing); // non-static for the oracle-dump ftest (keeper-rx)
 static void draw_fastview_mapwho(struct Camera *cam, struct BucketKindJontySprite *jspr)
 {
     unsigned short flg_mem;
@@ -7520,7 +7520,7 @@ static void draw_element(struct Map *map, long lightness, long stl_x, long stl_y
 
 }
 
-static unsigned short get_thing_shade(struct Thing* thing)
+unsigned short get_thing_shade(struct Thing* thing)
 {
     MapSubtlCoord stl_x;
     MapSubtlCoord stl_y;
