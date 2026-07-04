@@ -11,6 +11,7 @@
  */
 #include "tests/ftest_oracle_spike.h"
 #include "tests/ftest_movement_oracle.h"
+#include "tests/ftest_creature_state_slap.h"
 #include "tests/ftest_parity_screenshot.h"
 #if !defined(__APPLE__) // the legacy ftests below reference since-changed APIs (magic.h, the rules-config
 // layout, get_slab_attrs); the macOS oracle build (keeper-rx ADR-0016) compiles only the framework +
@@ -44,6 +45,9 @@ struct ftest_onlyappendtests__config ftest_onlyappendtests__conf = {
          // Movement velocity-integration oracle: a frozen imp on a claimed flat pad, dumped per turn across
          // fall/coast/walk for the keeper-rx MovementSystem to diff (keeper-rx ADR-0016, movement.md).
          { .test_name="movement_oracle",                    .init_func=ftest_movement_oracle_init,                  .level_file="classic",  .level=302, .frame_skip=0 },
+         // Creature-state slap oracle: one imp slapped on a claimed flat pad, dumps active_state + cower timer
+         // per turn across the 18-turn cower and the restore, for the keeper-rx state machine to diff (creature-states.md).
+         { .test_name="creature_state_slap",                .init_func=ftest_creature_state_slap_init,              .level_file="classic",  .level=302, .frame_skip=0 },
          // Parity screenshot oracle: tick-accurate frames + metadata json for keeper-rx's visual parity harness.
          // The level below is the DEFAULT only — override the map/campaign at runtime with KEEPERFX_FTEST_LEVEL / KEEPERFX_FTEST_CAMPAIGN.
          { .test_name="parity_screenshot",                  .init_func=ftest_parity_screenshot_init,                .level_file="classic",  .level=302, .frame_skip=0 },
