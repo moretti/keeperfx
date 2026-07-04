@@ -2,6 +2,8 @@
 
 #ifdef FUNCTESTING
 
+#include <stdlib.h>
+
 #include "../pre_inc.h"
 
 #include "../game_legacy.h"
@@ -295,6 +297,16 @@ TbBool ftest_setup_test(struct FTestConfig* const test_config)
     // change campaign / level
     strcpy(start_params.selected_campaign, test_config->level_file);
     LevelNumber selected_level = test_config->level;
+
+    // Opt-in run-time overrides so a capture/parity test isn't pinned to one map: set
+    // KEEPERFX_FTEST_CAMPAIGN / KEEPERFX_FTEST_LEVEL to shoot a different level from the same build.
+    // When both env vars are unset (the default) every existing test behaves exactly as before.
+    const char* campaign_override = getenv("KEEPERFX_FTEST_CAMPAIGN");
+    if (campaign_override != NULL && campaign_override[0] != '\0')
+        strcpy(start_params.selected_campaign, campaign_override);
+    const char* level_override = getenv("KEEPERFX_FTEST_LEVEL");
+    if (level_override != NULL && level_override[0] != '\0')
+        selected_level = (LevelNumber)atol(level_override);
 
     TbBool result = change_campaign(CampgnT_Default, start_params.selected_campaign);
     if(!result)

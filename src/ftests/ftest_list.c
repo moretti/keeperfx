@@ -10,6 +10,7 @@
  * Add the header files for all tests below here
  */
 #include "tests/ftest_oracle_spike.h"
+#include "tests/ftest_parity_screenshot.h"
 #if !defined(__APPLE__) // the legacy ftests below reference since-changed APIs (magic.h, the rules-config
 // layout, get_slab_attrs); the macOS oracle build (keeper-rx ADR-0016) compiles only the framework +
 // oracle_spike, so they are excluded here and from macos.mk's FTEST_C_SOURCES.
@@ -39,6 +40,9 @@ struct ftest_onlyappendtests__config ftest_onlyappendtests__conf = {
     .tests_list = {
          // Oracle-dump spike: map00302 ("Vassago", classic free-play pack), dumps heart beat + lightness for keeper-rx to diff (ADR-0016).
          { .test_name="oracle_spike",                       .init_func=ftest_oracle_spike_init,                     .level_file="classic",  .level=302, .frame_skip=0 },
+         // Parity screenshot oracle: tick-accurate frames + metadata json for keeper-rx's visual parity harness.
+         // The level below is the DEFAULT only — override the map/campaign at runtime with KEEPERFX_FTEST_LEVEL / KEEPERFX_FTEST_CAMPAIGN.
+         { .test_name="parity_screenshot",                  .init_func=ftest_parity_screenshot_init,                .level_file="classic",  .level=302, .frame_skip=0 },
 #if !defined(__APPLE__) // legacy ftests excluded from the macOS oracle build (see the include guard above)
          { .test_name="example_template_test",              .init_func=ftest_template_init,                         .level_file="keeporig", .level=8,  .frame_skip=8 },
          { .test_name="bug_imp_tp_attack_door__claim",      .init_func=ftest_bug_imp_tp_attack_door__claim_init,    .level_file="deepdngn", .level=80, .frame_skip=8 },
