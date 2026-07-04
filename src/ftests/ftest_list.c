@@ -13,6 +13,7 @@
 #include "tests/ftest_movement_oracle.h"
 #include "tests/ftest_creature_state_slap.h"
 #include "tests/ftest_parity_screenshot.h"
+#include "tests/ftest_ariadne_oracle.h"
 #if !defined(__APPLE__) // the legacy ftests below reference since-changed APIs (magic.h, the rules-config
 // layout, get_slab_attrs); the macOS oracle build (keeper-rx ADR-0016) compiles only the framework +
 // oracle_spike, so they are excluded here and from macos.mk's FTEST_C_SOURCES.
@@ -51,6 +52,10 @@ struct ftest_onlyappendtests__config ftest_onlyappendtests__conf = {
          // Parity screenshot oracle: tick-accurate frames + metadata json for keeper-rx's visual parity harness.
          // The level below is the DEFAULT only — override the map/campaign at runtime with KEEPERFX_FTEST_LEVEL / KEEPERFX_FTEST_CAMPAIGN.
          { .test_name="parity_screenshot",                  .init_func=ftest_parity_screenshot_init,                .level_file="classic",  .level=302, .frame_skip=0 },
+         // Ariadne navigation oracle: loads a synthetic keeper-rx level (mapNNNNN.* in levels/classic) and
+         // dumps the NavColour raster (D0) for the keeper-rx pathfinding port to diff (ADR-0024, pathfinding.md).
+         // Level below is the DEFAULT (M-full) — pick the fixture at runtime with KEEPERFX_FTEST_LEVEL.
+         { .test_name="ariadne_oracle",                     .init_func=ftest_ariadne_oracle_init,                   .level_file="classic",  .level=9003, .frame_skip=0 },
 #if !defined(__APPLE__) // legacy ftests excluded from the macOS oracle build (see the include guard above)
          { .test_name="example_template_test",              .init_func=ftest_template_init,                         .level_file="keeporig", .level=8,  .frame_skip=8 },
          { .test_name="bug_imp_tp_attack_door__claim",      .init_func=ftest_bug_imp_tp_attack_door__claim_init,    .level_file="deepdngn", .level=80, .frame_skip=8 },

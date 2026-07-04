@@ -77,7 +77,8 @@ ifeq ($(FTEST_DEBUG), 1)
                      src/ftests/tests/ftest_oracle_spike.c \
                      src/ftests/tests/ftest_movement_oracle.c \
                      src/ftests/tests/ftest_creature_state_slap.c \
-                     src/ftests/tests/ftest_parity_screenshot.c
+                     src/ftests/tests/ftest_parity_screenshot.c \
+                     src/ftests/tests/ftest_ariadne_oracle.c
   KFX_C_OBJECTS   += $(patsubst src/%.c,obj/%.o,$(FTEST_C_SOURCES))
 endif
 
