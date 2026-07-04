@@ -75,6 +75,7 @@ ifeq ($(FTEST_DEBUG), 1)
   # likewise guards the legacy registrations out on __APPLE__), not the whole tests/ directory.
   FTEST_C_SOURCES := src/ftests/ftest.c src/ftests/ftest_util.c src/ftests/ftest_list.c \
                      src/ftests/tests/ftest_oracle_spike.c \
+                     src/ftests/tests/ftest_movement_oracle.c \
                      src/ftests/tests/ftest_parity_screenshot.c
   KFX_C_OBJECTS   += $(patsubst src/%.c,obj/%.o,$(FTEST_C_SOURCES))
 endif
