@@ -87,19 +87,31 @@ static TbBool parity_no_creatures(void)
     return v != NULL && v[0] == '1';
 }
 
-// Optional: KEEPERFX_PARITY_NO_CURSOR_LIGHT=1 turns off the player's cursor light — a dynamic light
-// that follows the mouse pointer (created in init_player_as_single_keeper, player_utils.c). Our
-// renderer never draws it, so for a clean world-only parity shot it is a spurious light we can drop.
-static TbBool parity_no_cursor_light(void)
+// Delete every creature in the level. do_to_all_things_of_class_and_model() can't do this: it filters
+// on an exact model, and there is no "any model" wildcard (passing -1 matches nothing), so we sweep the
+// creature class-list ourselves. next_of_class is read BEFORE the delete so unlinking the current thing
+// can't strand the walk (the same guard the engine's own list sweeps use).
+static void parity_remove_all_creatures(void)
 {
-    const char* v = getenv("KEEPERFX_PARITY_NO_CURSOR_LIGHT");
-    return v != NULL && v[0] == '1';
-}
-
-static TbBool parity_delete_thing(struct Thing* thing)
-{
-    delete_thing_structure(thing, 0);
-    return false; // keep visiting the rest of the list
+    struct StructureList* slist = get_list_for_thing_class(TCls_Creature);
+    if (slist == NULL)
+        return;
+    unsigned long guard = slist->count + 1; // infinite-loop backstop against a corrupt list
+    unsigned long k = 0;
+    long i = slist->index;
+    while (i != 0)
+    {
+        struct Thing* thing = thing_get(i);
+        if (thing_is_invalid(thing))
+            break;
+        i = thing->next_of_class;
+        delete_thing_structure(thing, 0);
+        if (++k > guard)
+        {
+            ERRORLOG("parity: creature sweep exceeded list count");
+            break;
+        }
+    }
 }
 
 // Where the png+json pairs are written: $KEEPERFX_PARITY_OUT, else $KEEPERFX_ORACLE_OUT, else CWD.
@@ -201,8 +213,13 @@ FTestActionResult ftest_parity_screenshot_action001__capture(struct FTestActionA
         // keeper-rx's flicker:false / KEEPER_NO_FLICKER). Same bit clear as the numeric oracle.
         struct Light* lgt = &game.lish.lights[heartng->light_id];
         lgt->flags2 &= ~0xFE;
-        // Suspend the mouse so live pointer movement can't pan/zoom the camera mid-capture — the shot is
-        // driven only by this ftest, not by whatever the physical mouse is doing.
+        // Park the mouse pointer in the bottom-right screen corner, off the map. The heart sits near the
+        // map's south edge and south projects to the lower-right of the iso view, so that corner is the
+        // black void beyond the edge. The cursor light is re-placed from the mouse packet every tick
+        // (set_mouse_light, main.cpp) and turns itself off when the pointer is off the map, so parking it
+        // there keeps its glow out of every shot. Then suspend the mouse so live pointer movement can't
+        // move it back (or pan/zoom the camera).
+        LbMouseSetPosition(MyScreenWidth - 1, MyScreenHeight - 1);
         LbMouseSuspend();
         // Draw the camera we force, not a smoothed copy of it. The isometric view is rendered from a
         // separate "local camera" — get_local_camera() (local_camera.c) returns local_cameras[Iso],
@@ -224,7 +241,7 @@ FTestActionResult ftest_parity_screenshot_action001__capture(struct FTestActionA
         game.operation_flags &= ~(GOF_ShowGui | GOF_ShowPanel);
         // Optional scene variant: strip creatures so only the static world remains.
         if (parity_no_creatures())
-            do_to_all_things_of_class_and_model(TCls_Creature, -1, parity_delete_thing);
+            parity_remove_all_creatures();
         vars->setup_done = true;
     }
 
@@ -254,11 +271,6 @@ FTestActionResult ftest_parity_screenshot_action001__capture(struct FTestActionA
         // Hide the tile-selection box (the green cursor outline) — it follows the pointer and is UI our
         // renderer never draws, so it would be a spurious diff.
         map_volume_box.visible = 0;
-        // Optionally kill the pointer's dynamic cursor light (the warm glow under the mouse). Done per
-        // shot, not once in setup, so a mid-run view/possession transition can't turn it back on before
-        // the grab (see the light_turn_light_on calls in player_instances.c).
-        if (parity_no_cursor_light())
-            light_turn_light_off(player->cursor_light_idx);
         // The ftest fires in gameplay_loop_logic, before gameplay_loop_draw, so the on-screen frame is
         // still the previous turn's. Force a redraw so the captured PNG is exactly this turn's state.
         keeper_screen_redraw();
