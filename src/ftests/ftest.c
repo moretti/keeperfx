@@ -10,7 +10,7 @@
 #include "../slab_data.h"
 #include "../room_util.h"
 #include "../player_instances.h"
-#includw "../gui_msgs.h"
+#include "../gui_msgs.h"
 
 #include "../post_inc.h"
 

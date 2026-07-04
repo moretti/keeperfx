@@ -60,6 +60,24 @@ KFX_C_SOURCES   = $(filter %.c,$(KFX_SOURCES))
 KFX_CXX_SOURCES = $(filter %.cpp,$(KFX_SOURCES))
 KFX_C_OBJECTS   = $(patsubst src/%.c,obj/%.o,$(KFX_C_SOURCES))
 KFX_CXX_OBJECTS = $(patsubst src/%.cpp,obj/%.o,$(KFX_CXX_SOURCES))
+
+# ---- Functional-test / oracle-dump build (FTEST_DEBUG=1; off by default) ----
+# Mirrors the main Makefile's FTEST_DEBUG: define FUNCTESTING (freezes the PRNG seed, enables the
+# `-ftests` runner) and compile src/ftests/**, which linux.mk's KFX_SOURCES omits. Needed for the
+# oracle-dump harness (keeper-rx ADR-0016). Build with: make -f macos.mk FTEST_DEBUG=1 ...
+FTEST_DEBUG ?= 0
+ifeq ($(FTEST_DEBUG), 1)
+  KFX_CFLAGS      += -DFUNCTESTING=1
+  KFX_CXXFLAGS    += -DFUNCTESTING=1
+  # The legacy tests/ftest_bug_*.c reference since-changed APIs (magic.h, the rules-config layout,
+  # get_slab_attrs) and don't compile under clang; they are bit-rotted and unrelated to the oracle
+  # harness. So the macOS oracle build compiles only the framework + the oracle spike (ftest_list.c
+  # likewise guards the legacy registrations out on __APPLE__), not the whole tests/ directory.
+  FTEST_C_SOURCES := src/ftests/ftest.c src/ftests/ftest_util.c src/ftests/ftest_list.c \
+                     src/ftests/tests/ftest_oracle_spike.c
+  KFX_C_OBJECTS   += $(patsubst src/%.c,obj/%.o,$(FTEST_C_SOURCES))
+endif
+
 KFX_OBJECTS     = $(KFX_C_OBJECTS) $(KFX_CXX_OBJECTS)
 
 # ---- Include paths ----
