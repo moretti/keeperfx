@@ -995,7 +995,18 @@ void setup_mesh_randomizers(void)
     for (i=0; i < RANDOMISORS_LEN; i++)
     {
         // fill with value -RANDOMISORS_RANGE..RANDOMISORS_RANGE
+#ifdef FUNCTESTING
+        // FUNCTESTING freezes LbRandomSeries's seed advance (bflib_math.c) so unsynced *gameplay* RNG
+        // (light flicker) is reproducible. But that also degenerates this one-time deterministic mesh
+        // table — with the seed pinned, every entry collapses to 0x0f0f0f0f % 127 - 63 (= 35). Advance the
+        // seed inline (the non-frozen LbRandomSeries body) so the test build's randomisors — and thus the
+        // terrain shade dither and mesh wibble — match a release build, which is what an oracle must reflect.
+        uint32_t adv = 9377u * seed + 9439u;
+        seed = (adv >> 13) | (adv << 19); // rotate-right 13, as bflib_math.c
+        k = seed % (2*RANDOMISORS_RANGE+1);
+#else
         k = LB_RANDOM(2*RANDOMISORS_RANGE+1, &seed);
+#endif
         randomisors[i] = k - RANDOMISORS_RANGE;
     }
 }
