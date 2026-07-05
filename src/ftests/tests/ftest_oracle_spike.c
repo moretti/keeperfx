@@ -241,7 +241,7 @@ void ftest_oracle_write_dumps(GameTurn tick)
             "\"lgh00\":%ld,\"lgh01\":%ld,\"lgh10\":%ld,\"lgh11\":%ld,\"shade\":%d,\"shade_row\":%d}\n",
             ORACLE_DUMP_VERSION, (long)tick, (int)heartng->index, (int)heartng->model,
             (int)heartng->rendering_flags, (int)heartng->owner,
-            (int)game.conf.rules[heartng->owner].gameplay.thing_minimum_illumination,
+            (int)game.conf.rules[heartng->owner].game.thing_minimum_illumination,
             (int)heartng->mappos.x.val, (int)heartng->mappos.y.val, (int)heartng->mappos.z.val,
             (int)sx, (int)sy, (int)heartng->mappos.x.stl.pos, (int)heartng->mappos.y.stl.pos,
             lgh00, lgh01, lgh10, lgh11, (int)shade, (int)(shade >> 8));
