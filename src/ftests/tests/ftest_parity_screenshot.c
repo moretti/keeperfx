@@ -17,6 +17,7 @@
 #include "../../keeperfx.hpp"
 #include "../../thing_objects.h"
 #include "../../light_data.h"
+#include "../../map_columns.h"
 #include "../../game_lghtshdw.h"
 #include "../../player_data.h"
 #include "../../player_instances.h"
@@ -108,6 +109,71 @@ static TbBool parity_oracle_enabled(void)
     return v != NULL && v[0] == '1';
 }
 
+// Optional: KEEPERFX_PARITY_FOCUS_OFFSET_STL="dx,dy" shifts the forced camera off the heart by (dx,dy)
+// subtiles (north is -y), so a scene can frame a different part of the map — e.g. push north to bring the
+// heart room's wall torches into shot. Unset → the camera stays heart-centred.
+static TbBool parity_focus_offset(int* dx, int* dy)
+{
+    const char* v = getenv("KEEPERFX_PARITY_FOCUS_OFFSET_STL");
+    return v != NULL && sscanf(v, "%d,%d", dx, dy) == 2;
+}
+
+// Optional: KEEPERFX_PARITY_ZOOM overrides the fixed capture zoom (default PARITY_ZOOM), so a scene can
+// frame tighter or wider. keeper-rx reads the resulting zoom from the json, so both sides stay matched.
+static int parity_zoom(void)
+{
+    const char* v = getenv("KEEPERFX_PARITY_ZOOM");
+    int z = 0;
+    return (v != NULL && sscanf(v, "%d", &z) == 1 && z > 0) ? z : PARITY_ZOOM;
+}
+
+// Optional: KEEPERFX_PARITY_HAND_LIGHT="x0,y0;x1,y1;..." keeps the player's cursor/hand light (instead of
+// deleting it) and drives it along this route — one waypoint per shot (the ordinal in PARITY_SHOT_TICKS),
+// holding the last past the end. A headless capture has no mouse, so this is how the pool is placed at a
+// known subtile and recorded; keeper-rx reads the per-frame position from the json and matches it. Unset →
+// the light is deleted, the default cursor-free shot.
+static TbBool parity_hand_light_enabled(void)
+{
+    const char* v = getenv("KEEPERFX_PARITY_HAND_LIGHT");
+    return v != NULL && v[0] != '\0';
+}
+
+// The hand light's subtile at the given shot ordinal, clamped to the final waypoint. False when unset.
+static TbBool parity_hand_light_at(int shot_index, int* out_x, int* out_y)
+{
+    const char* v = getenv("KEEPERFX_PARITY_HAND_LIGHT");
+    if (v == NULL || v[0] == '\0')
+        return false;
+
+    int x = 0, y = 0, i = 0;
+    TbBool have = false;
+    for (const char* p = v; *p != '\0'; )
+    {
+        int cx, cy, consumed = 0;
+        if (sscanf(p, " %d , %d%n", &cx, &cy, &consumed) != 2)
+            break;
+        x = cx; y = cy; have = true;
+        if (i >= shot_index)
+            break;                       // reached the requested waypoint
+        i++;
+        for (p += consumed; *p == ';' || *p == ' '; p++) { } // step past the separator
+    }
+    if (!have)
+        return false;
+    *out_x = x; *out_y = y;
+    return true;
+}
+
+// The ordinal of a shot tick within PARITY_SHOT_TICKS (0-based), or -1 if it isn't a shot tick — used to
+// index the hand-light route so the pool advances one waypoint per captured frame.
+static int parity_shot_index(GameTurn tick)
+{
+    for (int i = 0; i < PARITY_SHOT_COUNT; i++)
+        if (PARITY_SHOT_TICKS[i] == tick)
+            return i;
+    return -1;
+}
+
 // Delete every creature in the level. do_to_all_things_of_class_and_model() can't do this: it filters
 // on an exact model, and there is no "any model" wildcard (passing -1 matches nothing), so we sweep the
 // creature class-list ourselves. next_of_class is read BEFORE the delete so unlinking the current thing
@@ -179,7 +245,8 @@ static TbBool tick_is_a_shot(GameTurn tick)
 // value is read live from the engine — the camera especially, since its zoom drifts run to run and must
 // be recorded, not assumed. Schema: keeper-rx/docs/design/parity-snapshot-harness.md.
 static void parity_write_frame_json(const char* path, LevelNumber map, GameTurn tick,
-                                    const struct Camera* cam, int width, int height)
+                                    const struct Camera* cam, int width, int height,
+                                    TbBool hand_light_on, int hand_light_x, int hand_light_y)
 {
     FILE* f = fopen(path, "w");
     if (f == NULL)
@@ -191,6 +258,13 @@ static void parity_write_frame_json(const char* path, LevelNumber map, GameTurn 
     const char* view_mode = (settings.video_rotate_mode == 0) ? "wibble" : "straight";
     double focus_x = (double)cam->mappos.x.val / PARITY_COORDS_PER_SUBTILE;
     double focus_y = (double)cam->mappos.y.val / PARITY_COORDS_PER_SUBTILE;
+    // The hand-light subtile this shot placed the pool at (or null for a cursor-free shot), so keeper-rx
+    // can match it exactly.
+    char hand_light_json[32];
+    if (hand_light_on)
+        snprintf(hand_light_json, sizeof(hand_light_json), "[%d, %d]", hand_light_x, hand_light_y);
+    else
+        snprintf(hand_light_json, sizeof(hand_light_json), "null");
     fprintf(f,
         "{\n"
         "  \"engine\": \"keeperfx\",\n"
@@ -202,11 +276,12 @@ static void parity_write_frame_json(const char* path, LevelNumber map, GameTurn 
         "  \"camera\": { \"focusSubtile\": [%.3f, %.3f], \"zoom\": %d, \"rotation\": [%d, %d, %d] },\n"
         "  \"viewMode\": \"%s\",\n"
         "  \"flicker\": false,\n"
+        "  \"handLight\": %s,\n"
         "  \"oracle\": ",
         VER_STRING, parity_scene(), (long)map, (long)tick, width, height,
         focus_x, focus_y, (int)cam->zoom,
         (int)cam->rotation_angle_x, (int)cam->rotation_angle_y, (int)cam->rotation_angle_z,
-        view_mode);
+        view_mode, hand_light_json);
     // Nest the numeric oracle for this frame as the "oracle" value, then close the top-level object.
     parity_write_oracle_object(f, cam, tick);
     fprintf(f, "\n}\n");
@@ -317,17 +392,23 @@ FTestActionResult ftest_parity_screenshot_action001__capture(struct FTestActionA
         // keeper-rx's flicker:false / KEEPER_NO_FLICKER). Same bit clear as the numeric oracle.
         struct Light* lgt = &game.lish.lights[heartng->light_id];
         lgt->flags2 &= ~0xFE;
-        // Kill the player's cursor/hand light (init_player_as_single_keeper, player_utils.c: radius 2560,
-        // intensity 48, flickering) so its glow never contaminates a shot. Parking the mouse off-map isn't
-        // enough — the per-turn player-instance updates and set_mouse_light turn it back on within a few
-        // turns, so it reappears in the bottom-right void from ~tick 18 (confirmed in the shot's own lights
-        // dump). Deleting the light and zeroing the handle makes set_mouse_light early-return and every
-        // light_turn_light_on(cursor_light_idx) a no-op, so it can't come back.
+        // The player's cursor/hand light (init_player_as_single_keeper, player_utils.c: radius 2560,
+        // intensity 48, flickering). A scene either keeps it (to shoot the hand-light pool itself) or
+        // deletes it (a cursor-free shot, the default). Parking the mouse off-map isn't enough — the
+        // per-turn player-instance updates and set_mouse_light turn it back on within a few turns, so it
+        // reappears in the bottom-right void from ~tick 18. So to shoot WITHOUT it we delete it and zero the
+        // handle (set_mouse_light then early-returns and light_turn_light_on is a no-op); to shoot WITH it
+        // we keep it, freeze its flicker like the heart, and drive its position ourselves each shot below.
         struct PlayerInfo* plyr0 = get_player(PLAYER0);
         if (plyr0->cursor_light_idx != 0)
         {
-            light_delete_light(plyr0->cursor_light_idx);
-            plyr0->cursor_light_idx = 0;
+            if (parity_hand_light_enabled())
+                game.lish.lights[plyr0->cursor_light_idx].flags2 &= ~0xFE; // freeze its flicker, keep it
+            else
+            {
+                light_delete_light(plyr0->cursor_light_idx);
+                plyr0->cursor_light_idx = 0;
+            }
         }
         // Suspend the mouse so live pointer movement can't pan/zoom the camera during the capture (the
         // parked position is irrelevant to lighting now that the cursor light is gone).
@@ -377,9 +458,17 @@ FTestActionResult ftest_parity_screenshot_action001__capture(struct FTestActionA
         // (engine_camera.c:423) — i.e. the persisted settings.toml zoom, drifted by the mouse wheel — so
         // set THAT source (not just cam->zoom, which would be overwritten) to pin the actual drawn zoom.
         ftest_util_move_camera_to_thing(heartng, PLAYER0);
-        player->isometric_view_zoom_level = PARITY_ZOOM;
-        settings.isometric_view_zoom_level = PARITY_ZOOM;
-        set_camera_zoom(cam, PARITY_ZOOM);
+        // Optional scene framing: shift the camera off the heart by (dx,dy) subtiles (e.g. north to the torches).
+        int off_dx, off_dy;
+        if (parity_focus_offset(&off_dx, &off_dy))
+        {
+            cam->mappos.x.val += off_dx * (int)PARITY_COORDS_PER_SUBTILE;
+            cam->mappos.y.val += off_dy * (int)PARITY_COORDS_PER_SUBTILE;
+        }
+        int zoom = parity_zoom();
+        player->isometric_view_zoom_level = zoom;
+        settings.isometric_view_zoom_level = zoom;
+        set_camera_zoom(cam, zoom);
         // Full-screen the 3D viewport so the world fills the frame and the heart is centred (with the
         // HUD hidden the panel-inset window would otherwise leave the world off-centre with a black bar).
         player->engine_window_x = 0;
@@ -392,6 +481,22 @@ FTestActionResult ftest_parity_screenshot_action001__capture(struct FTestActionA
         // Hide the tile-selection box (the green cursor outline) — it follows the pointer and is UI our
         // renderer never draws, so it would be a spurious diff.
         map_volume_box.visible = 0;
+        // Drive the hand light for this shot: place it on the floor of its scripted subtile and turn it on
+        // (set_mouse_light can't — the mouse is suspended). Done right before the redraw so the shot has it
+        // on; the json below records where, so keeper-rx places its own pool at the same subtile.
+        int hl_x = 0, hl_y = 0;
+        TbBool hl_on = false;
+        if (parity_hand_light_enabled() && player->cursor_light_idx != 0
+            && parity_hand_light_at(parity_shot_index(tick), &hl_x, &hl_y))
+        {
+            struct Coord3d hlpos;
+            hlpos.x.val = (hl_x << 8) + (int)(PARITY_COORDS_PER_SUBTILE / 2);
+            hlpos.y.val = (hl_y << 8) + (int)(PARITY_COORDS_PER_SUBTILE / 2);
+            hlpos.z.val = get_floor_height_at(&hlpos);
+            light_turn_light_on(player->cursor_light_idx);
+            light_set_light_position(player->cursor_light_idx, &hlpos);
+            hl_on = true;
+        }
         // The ftest fires in gameplay_loop_logic, before gameplay_loop_draw, so the on-screen frame is
         // still the previous turn's. Force a redraw so the captured PNG is exactly this turn's state.
         keeper_screen_redraw();
@@ -414,7 +519,7 @@ FTestActionResult ftest_parity_screenshot_action001__capture(struct FTestActionA
             FTESTLOG("parity: FAILED screenshot at tick %ld", (long)tick);
 
         // One json per frame: reproduce-metadata with the numeric oracle nested under "oracle".
-        parity_write_frame_json(json_path, map, tick, cam, width, height);
+        parity_write_frame_json(json_path, map, tick, cam, width, height, hl_on, hl_x, hl_y);
 
         // At the oracle tick, this launch also emits the full numeric dump. keeper_screen_redraw() above
         // has just drawn the heart-centred frame, so the iso-shade capture reflects exactly this shot.
