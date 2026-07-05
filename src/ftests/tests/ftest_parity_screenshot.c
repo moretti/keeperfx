@@ -301,12 +301,20 @@ FTestActionResult ftest_parity_screenshot_action001__capture(struct FTestActionA
         // keeper-rx's flicker:false / KEEPER_NO_FLICKER). Same bit clear as the numeric oracle.
         struct Light* lgt = &game.lish.lights[heartng->light_id];
         lgt->flags2 &= ~0xFE;
-        // Park the mouse pointer in the bottom-right screen corner, off the map. The heart sits near the
-        // map's south edge and south projects to the lower-right of the iso view, so that corner is the
-        // black void beyond the edge. The cursor light is re-placed from the mouse packet every tick
-        // (set_mouse_light, main.cpp) and turns itself off when the pointer is off the map, so parking it
-        // there keeps its glow out of every shot. Then suspend the mouse so live pointer movement can't
-        // move it back (or pan/zoom the camera).
+        // Kill the player's cursor/hand light (init_player_as_single_keeper, player_utils.c: radius 2560,
+        // intensity 48, flickering) so its glow never contaminates a shot. Parking the mouse off-map isn't
+        // enough — the per-turn player-instance updates and set_mouse_light turn it back on within a few
+        // turns, so it reappears in the bottom-right void from ~tick 18 (confirmed in the shot's own lights
+        // dump). Deleting the light and zeroing the handle makes set_mouse_light early-return and every
+        // light_turn_light_on(cursor_light_idx) a no-op, so it can't come back.
+        struct PlayerInfo* plyr0 = get_player(PLAYER0);
+        if (plyr0->cursor_light_idx != 0)
+        {
+            light_delete_light(plyr0->cursor_light_idx);
+            plyr0->cursor_light_idx = 0;
+        }
+        // Suspend the mouse so live pointer movement can't pan/zoom the camera during the capture (the
+        // parked position is irrelevant to lighting now that the cursor light is gone).
         LbMouseSetPosition(MyScreenWidth - 1, MyScreenHeight - 1);
         LbMouseSuspend();
         // Draw the camera we force, not a smoothed copy of it. The isometric view is rendered from a
