@@ -22,6 +22,7 @@
 #include "../../thing_objects.h"
 #include "../../map_data.h"
 #include "../../player_instances.h"
+#include "../../ver_defs.h"
 
 #include "../../post_inc.h"
 
@@ -195,10 +196,18 @@ FTestActionResult ftest_oracle_spike_action001__dump(struct FTestActionArgs* con
             FTEST_FRAMEWORK_ABORT("oracle: could not open JSONL output");
             return FTRs_Go_To_Next_Action;
         }
+        // Provenance so a stray dump is reproducible from the meta line alone: which binary produced it
+        // (absolute path) and the git commit it was built from. Both are passed by the capture script
+        // (KEEPERFX_ORACLE_BINARY / KEEPERFX_ORACLE_BUILD); empty when run by hand. VER_STRING is the
+        // compiled-in engine version. See keeper-rx/docs/oracle/dump-format.md.
+        const char* prov_binary = getenv("KEEPERFX_ORACLE_BINARY");
+        const char* prov_build  = getenv("KEEPERFX_ORACLE_BUILD");
         fprintf(vars->jsonl,
             "{\"v\":%d,\"type\":\"meta\",\"probe\":\"heartbeat\",\"level\":302,\"campaign\":\"classic\","
-            "\"target_tick\":%ld,\"heart_flicker_disabled\":true,\"engine\":\"keeperfx-oracle-dumps\"}\n",
-            ORACLE_DUMP_VERSION, (long)vars->target_tick);
+            "\"target_tick\":%ld,\"heart_flicker_disabled\":true,\"engine\":\"keeperfx-oracle-dumps\","
+            "\"version\":\"%s\",\"binary\":\"%s\",\"build\":\"%s\"}\n",
+            ORACLE_DUMP_VERSION, (long)vars->target_tick, VER_STRING,
+            prov_binary ? prov_binary : "", prov_build ? prov_build : "");
         vars->setup_done = true;
     }
 
