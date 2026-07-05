@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 // Oracle dump format version — bump on any layout/meaning change (keeper-rx/docs/oracle/dump-format.md).
-#define IMP_DIG_ORACLE_VERSION 1
+#define IMP_DIG_ORACLE_VERSION 2
 
 // The scenario is pinned to the M-full synthetic fixture: it carries the one diggable earth tile the
 // keeper-rx pathfinding/dig steps target (SyntheticMaps.MFull, slab (21, corridorY=Size/2=42)). The tile
@@ -103,6 +103,12 @@ static const char* imp_dig_out_dir(void)
 //   block_health         slb->health            (the earth block's remaining hit-points)
 //   block_kind           slb->kind              (SlbT_EARTH=2 while standing, SlbT_PATH=10 once dug)
 //   task_count           dungeon->task_count    (the designation list occupancy)
+//   anim_sprite          imp->anim_sprite       (resolved top-down keepersprite id set by the selector)
+//   anim_speed           imp->anim_speed        (the CGI speed the selector chose this tick)
+//   max_frames           imp->max_frames        (keepersprite_frames of the current strip)
+//   current_frame        imp->current_frame     (advanced by update_thing_animation after the selector)
+//   distance_to_dest     cctrl->distance_to_destination      (signed 2-D distance moved toward the facing)
+//   inst_anim_step_turns cctrl->instance_anim_step_turns     (the swing's stretched per-turn animation step)
 static void imp_dig_dump(FILE* f, struct Thing* imp)
 {
     struct CreatureControl* cctrl = creature_control_get_from_thing(imp);
@@ -112,11 +118,15 @@ static void imp_dig_dump(FILE* f, struct Thing* imp)
         "{\"v\":%d,\"type\":\"imp_dig\",\"tick\":%ld,"
         "\"pos_x\":%ld,\"pos_y\":%ld,\"active_state\":%d,"
         "\"instance_id\":%d,\"inst_turn\":%d,\"inst_action_turns\":%d,"
-        "\"block_health\":%d,\"block_kind\":%d,\"task_count\":%d}\n",
+        "\"block_health\":%d,\"block_kind\":%d,\"task_count\":%d,"
+        "\"anim_sprite\":%d,\"anim_speed\":%d,\"max_frames\":%d,\"current_frame\":%d,"
+        "\"distance_to_destination\":%d,\"instance_anim_step_turns\":%d}\n",
         IMP_DIG_ORACLE_VERSION, (long)get_gameturn(),
         (long)imp->mappos.x.val, (long)imp->mappos.y.val, (int)imp->active_state,
         (int)cctrl->instance_id, (int)cctrl->inst_turn, (int)cctrl->inst_action_turns,
-        (int)slb->health, (int)slb->kind, (int)dungeon->task_count);
+        (int)slb->health, (int)slb->kind, (int)dungeon->task_count,
+        (int)imp->anim_sprite, (int)imp->anim_speed, (int)imp->max_frames, (int)imp->current_frame,
+        (int)cctrl->distance_to_destination, (int)cctrl->instance_anim_step_turns);
 }
 
 // Driver: on the first turn reveal the map, spawn the imp, tag the earth tile with the real player action,
