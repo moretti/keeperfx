@@ -10,6 +10,7 @@
 
 #include "../ftest.h"
 #include "../ftest_util.h"
+#include "ftest_oracle_spike.h"
 
 #include "../../game_legacy.h"
 #include "../../game_merge.h"
@@ -62,6 +63,11 @@ static const GameTurn PARITY_SHOT_TICKS[] = { 9, 18, 27, 36 };
 #define PARITY_SHOT_COUNT ((int)(sizeof(PARITY_SHOT_TICKS) / sizeof(PARITY_SHOT_TICKS[0])))
 #define PARITY_LAST_TICK (PARITY_SHOT_TICKS[PARITY_SHOT_COUNT - 1])
 
+// When the numeric oracle dump is enabled (see parity_oracle_enabled), it is taken at this shot tick —
+// the resting-beat plateau (turn 18), the same target the standalone oracle_spike uses so the two paths
+// produce identical dumps. It must be one of PARITY_SHOT_TICKS so the heart-centred frame is drawn first.
+#define PARITY_ORACLE_TICK 18
+
 struct ftest_parity_screenshot__variables
 {
     TbBool setup_done;
@@ -88,6 +94,16 @@ static const char* parity_scene(void)
 static TbBool parity_no_creatures(void)
 {
     const char* v = getenv("KEEPERFX_PARITY_NO_CREATURES");
+    return v != NULL && v[0] == '1';
+}
+
+// Optional: KEEPERFX_PARITY_ORACLE=1 also emits the numeric oracle dump (heartbeat/randomisors/thing-
+// shade/light-inputs JSONL + the Tier-B binary arrays) from THIS same launch, at PARITY_ORACLE_TICK.
+// Both ftests force the same heart-centred, flicker-frozen, mouse-suspended frame, so one boot yields the
+// screenshots and the ground-truth numbers from the identical frame — no second run, no drift between them.
+static TbBool parity_oracle_enabled(void)
+{
+    const char* v = getenv("KEEPERFX_PARITY_ORACLE");
     return v != NULL && v[0] == '1';
 }
 
@@ -338,8 +354,17 @@ FTestActionResult ftest_parity_screenshot_action001__capture(struct FTestActionA
         // Optional scene variant: strip creatures so only the static world remains.
         if (parity_no_creatures())
             parity_remove_all_creatures();
+        // Optional: arm the numeric oracle dump so this same launch also emits the ground-truth JSONL +
+        // arrays. Flicker is already frozen and the mouse suspended above, matching the standalone spike.
+        if (parity_oracle_enabled())
+            ftest_oracle_begin(PARITY_ORACLE_TICK);
         vars->setup_done = true;
     }
+
+    // The oracle's per-turn Tier-A record (a no-op unless armed and until the dump is taken). Written
+    // before any shot work so turn PARITY_ORACLE_TICK's beat state is recorded ahead of that turn's dump.
+    if (parity_oracle_enabled())
+        ftest_oracle_write_heartbeat();
 
     GameTurn tick = get_gameturn();
     if (tick_is_a_shot(tick))
@@ -392,6 +417,14 @@ FTestActionResult ftest_parity_screenshot_action001__capture(struct FTestActionA
 
         parity_write_metadata(json_path, map, tick, cam, width, height);
         parity_write_oracle(oracle_path, cam, tick);
+
+        // At the oracle tick, this launch also emits the full numeric dump. keeper_screen_redraw() above
+        // has just drawn the heart-centred frame, so the iso-shade capture reflects exactly this shot.
+        if (parity_oracle_enabled() && tick == PARITY_ORACLE_TICK)
+        {
+            ftest_oracle_write_dumps(tick);
+            ftest_oracle_close();
+        }
     }
 
     if (tick < PARITY_LAST_TICK)

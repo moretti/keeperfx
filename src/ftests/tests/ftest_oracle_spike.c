@@ -22,6 +22,7 @@
 #include "../../thing_objects.h"
 #include "../../map_data.h"
 #include "../../player_instances.h"
+#include "../../bflib_mouse.h"
 #include "../../ver_defs.h"
 
 #include "../../post_inc.h"
@@ -49,20 +50,10 @@ extern "C" {
 #define ORACLE_PROBE_STAT_LIGHT_MAP    2u
 #define ORACLE_PROBE_ISO_SHADE         3u   // per-(subtile,height) shade_intensity, a 3D array (depth = heights)
 
-struct ftest_oracle_spike__variables
-{
-    GameTurn target_tick;
-    FILE* jsonl;      // Tier A: per-turn heart-beat records + the light-input record
-    TbBool setup_done;
-    TbBool dumped;
-};
-
-static struct ftest_oracle_spike__variables ftest_oracle_spike__vars = {
-    .target_tick = ORACLE_TARGET_TICK,
-    .jsonl = NULL,
-    .setup_done = false,
-    .dumped = false,
-};
+// Oracle-dump state, at module scope so both the standalone spike action and the parity ftest (which
+// calls the ftest_oracle_* functions to emit the same dump in its own launch) share one open JSONL.
+static FILE* oracle_jsonl = NULL;         // Tier A: per-turn heart-beat records + the tick-target dumps
+static GameTurn oracle_target_tick = ORACLE_TARGET_TICK;
 
 // forward declarations
 FTestActionResult ftest_oracle_spike_action001__dump(struct FTestActionArgs* const args);
@@ -159,62 +150,45 @@ static void oracle_dump_iso_shade(const char* filename, GameTurn tick)
 }
 #endif
 
-TbBool ftest_oracle_spike_init()
+// --- Reusable oracle dump (shared by this spike and the parity ftest) -------------------------------
+
+// Open the JSONL, arm the iso-shade capture, and write the self-describing meta line. The caller has
+// already frozen the heart's flicker and posed the camera; this only owns the dump files.
+void ftest_oracle_begin(GameTurn target_tick)
 {
-    // Fire every turn from the start; the action self-terminates at the target tick.
-    ftest_append_action(ftest_oracle_spike_action001__dump, 0, &ftest_oracle_spike__vars);
-    return true;
+    oracle_target_tick = target_tick;
+    // Start capturing the isometric per-vertex shade_intensity so the target frame holds a full frame.
+    oracle_iso_shade_reset();
+
+    oracle_jsonl = oracle_open("oracle_heartbeat_t18.jsonl", "w");
+    if (oracle_jsonl == NULL)
+        return;
+    // Provenance so a stray dump is reproducible from the meta line alone: which binary produced it
+    // (absolute path) and the git commit it was built from. Both are passed by the capture script
+    // (KEEPERFX_ORACLE_BINARY / KEEPERFX_ORACLE_BUILD); empty when run by hand. VER_STRING is the
+    // compiled-in engine version. See keeper-rx/docs/oracle/dump-format.md.
+    const char* prov_binary = getenv("KEEPERFX_ORACLE_BINARY");
+    const char* prov_build  = getenv("KEEPERFX_ORACLE_BUILD");
+    fprintf(oracle_jsonl,
+        "{\"v\":%d,\"type\":\"meta\",\"probe\":\"heartbeat\",\"level\":302,\"campaign\":\"classic\","
+        "\"target_tick\":%ld,\"heart_flicker_disabled\":true,\"engine\":\"keeperfx-oracle-dumps\","
+        "\"version\":\"%s\",\"binary\":\"%s\",\"build\":\"%s\"}\n",
+        ORACLE_DUMP_VERSION, (long)oracle_target_tick, VER_STRING,
+        prov_binary ? prov_binary : "", prov_build ? prov_build : "");
 }
 
-FTestActionResult ftest_oracle_spike_action001__dump(struct FTestActionArgs* const args)
+// Tier A — the beating heart's deterministic per-turn state (thing_objects.c:1120 update). A no-op once
+// the JSONL is closed, so the parity ftest can call it every turn without guarding on the target.
+void ftest_oracle_write_heartbeat(void)
 {
-    struct ftest_oracle_spike__variables* const vars = args->data;
-
+    if (oracle_jsonl == NULL)
+        return;
     struct Thing* heartng = get_player_soul_container(PLAYER0);
     if (thing_is_invalid(heartng))
-    {
-        FTEST_FAIL_TEST("oracle: PLAYER0 has no dungeon heart on map302 (is -campaign classic set?)");
-        return FTRs_Go_To_Next_Action;
-    }
-
-    struct Light* lgt = &game.lish.lights[heartng->light_id];
-
-    if (!vars->setup_done)
-    {
-        // Isolate the deterministic light field: clear the heart light's flicker bits so
-        // render_intensity = intensity<<8 (no UNSYNC_RANDOM term). See dump-format.md "Flicker".
-        lgt->flags2 &= ~0xFE;
-        // Camera on the heart (its dynamic light renders near the camera) — the documented default view.
-        ftest_util_reveal_map(PLAYER0);
-        ftest_util_move_camera_to_thing(heartng, PLAYER0);
-        // Start capturing the isometric per-vertex shade_intensity so the dump tick holds a full frame.
-        oracle_iso_shade_reset();
-
-        vars->jsonl = oracle_open("oracle_heartbeat_t18.jsonl", "w");
-        if (vars->jsonl == NULL)
-        {
-            FTEST_FRAMEWORK_ABORT("oracle: could not open JSONL output");
-            return FTRs_Go_To_Next_Action;
-        }
-        // Provenance so a stray dump is reproducible from the meta line alone: which binary produced it
-        // (absolute path) and the git commit it was built from. Both are passed by the capture script
-        // (KEEPERFX_ORACLE_BINARY / KEEPERFX_ORACLE_BUILD); empty when run by hand. VER_STRING is the
-        // compiled-in engine version. See keeper-rx/docs/oracle/dump-format.md.
-        const char* prov_binary = getenv("KEEPERFX_ORACLE_BINARY");
-        const char* prov_build  = getenv("KEEPERFX_ORACLE_BUILD");
-        fprintf(vars->jsonl,
-            "{\"v\":%d,\"type\":\"meta\",\"probe\":\"heartbeat\",\"level\":302,\"campaign\":\"classic\","
-            "\"target_tick\":%ld,\"heart_flicker_disabled\":true,\"engine\":\"keeperfx-oracle-dumps\","
-            "\"version\":\"%s\",\"binary\":\"%s\",\"build\":\"%s\"}\n",
-            ORACLE_DUMP_VERSION, (long)vars->target_tick, VER_STRING,
-            prov_binary ? prov_binary : "", prov_build ? prov_build : "");
-        vars->setup_done = true;
-    }
-
-    // Tier A — the beating heart's deterministic per-turn state (thing_objects.c:1120 update).
+        return;
     struct ObjectConfigStats* objst = get_object_model_stats(heartng->model);
     unsigned char intensity = light_get_light_intensity(heartng->light_id);
-    fprintf(vars->jsonl,
+    fprintf(oracle_jsonl,
         "{\"v\":%d,\"type\":\"heartbeat\",\"tick\":%ld,\"thing_idx\":%d,\"current_frame\":%d,"
         "\"anim_time\":%ld,\"beat_direction\":%d,\"light_id\":%d,\"light_intensity\":%d,"
         "\"health\":%ld,\"max_health\":%ld}\n",
@@ -222,16 +196,26 @@ FTestActionResult ftest_oracle_spike_action001__dump(struct FTestActionArgs* con
         (int)heartng->current_frame, (long)heartng->anim_time,
         (int)(signed char)heartng->heart.beat_direction, (int)heartng->light_id, (int)intensity,
         (long)heartng->health, (long)objst->health);
+}
 
-    if (get_gameturn() < vars->target_tick)
-        return FTRs_Repeat_Current_Action;
+// The target-turn dump: the light inputs, the heart's ground-truth shade, the two Tier-B lightness
+// arrays, the randomisors, and the iso-shade array. Call once, AFTER the target frame has been drawn.
+void ftest_oracle_write_dumps(GameTurn tick)
+{
+    if (oracle_jsonl == NULL)
+        return;
+    struct Thing* heartng = get_player_soul_container(PLAYER0);
+    if (thing_is_invalid(heartng))
+        return;
+    struct Light* lgt = &game.lish.lights[heartng->light_id];
+    unsigned char intensity = light_get_light_intensity(heartng->light_id);
 
     // Tier B — array snapshot + the ground-truth light inputs the keeper-rx diff feeds to Compute.
-    fprintf(vars->jsonl,
+    fprintf(oracle_jsonl,
         "{\"v\":%d,\"type\":\"lightdump\",\"tick\":%ld,\"light_id\":%d,\"light_intensity\":%d,"
         "\"radius\":%d,\"range\":%d,\"pos_x\":%d,\"pos_y\":%d,\"pos_z\":%d,\"stl_x\":%d,\"stl_y\":%d,"
         "\"flags2\":%d,\"array_width\":%d,\"array_height\":%d}\n",
-        ORACLE_DUMP_VERSION, (long)get_gameturn(), (int)heartng->light_id, (int)intensity,
+        ORACLE_DUMP_VERSION, (long)tick, (int)heartng->light_id, (int)intensity,
         (int)lgt->radius, (int)lgt->range,
         (int)lgt->mappos.x.val, (int)lgt->mappos.y.val, (int)lgt->mappos.z.val,
         (int)coord_subtile(lgt->mappos.x.val), (int)coord_subtile(lgt->mappos.y.val),
@@ -250,12 +234,12 @@ FTestActionResult ftest_oracle_spike_action001__dump(struct FTestActionArgs* con
         long lgh10 = get_subtile_lightness(&game.lish, sx,     sy + 1);
         long lgh11 = get_subtile_lightness(&game.lish, sx + 1, sy + 1);
         unsigned short shade = get_thing_shade(heartng);
-        fprintf(vars->jsonl,
+        fprintf(oracle_jsonl,
             "{\"v\":%d,\"type\":\"thing_shade\",\"tick\":%ld,\"thing_idx\":%d,\"model\":%d,"
             "\"rendering_flags\":%d,\"owner\":%d,\"min_illum\":%d,\"pos_x\":%d,\"pos_y\":%d,\"pos_z\":%d,"
             "\"stl_x\":%d,\"stl_y\":%d,\"fract_x\":%d,\"fract_y\":%d,"
             "\"lgh00\":%ld,\"lgh01\":%ld,\"lgh10\":%ld,\"lgh11\":%ld,\"shade\":%d,\"shade_row\":%d}\n",
-            ORACLE_DUMP_VERSION, (long)get_gameturn(), (int)heartng->index, (int)heartng->model,
+            ORACLE_DUMP_VERSION, (long)tick, (int)heartng->index, (int)heartng->model,
             (int)heartng->rendering_flags, (int)heartng->owner,
             (int)game.conf.rules[heartng->owner].gameplay.thing_minimum_illumination,
             (int)heartng->mappos.x.val, (int)heartng->mappos.y.val, (int)heartng->mappos.z.val,
@@ -264,29 +248,81 @@ FTestActionResult ftest_oracle_spike_action001__dump(struct FTestActionArgs* con
     }
 
     oracle_dump_array("oracle_subtile_lightness_t18.bin", ORACLE_PROBE_SUBTILE_LIGHTNESS,
-                      get_gameturn(), game.lish.subtile_lightness);
+                      tick, game.lish.subtile_lightness);
     oracle_dump_array("oracle_stat_light_map_t18.bin", ORACLE_PROBE_STAT_LIGHT_MAP,
-                      get_gameturn(), game.lish.stat_light_map);
+                      tick, game.lish.stat_light_map);
 
     // Tier B — the deterministic mesh randomisors (setup_mesh_randomizers, seed 0x0f0f0f0f). Pure code
     // output (not copyrighted map data), so the keeper-rx port asserts its LbRandomSeries table against
     // these exactly. Emitted as one JSONL record (512 small ints ~2KB).
-    fprintf(vars->jsonl, "{\"v\":%d,\"type\":\"randomisors\",\"count\":%d,\"values\":[",
+    fprintf(oracle_jsonl, "{\"v\":%d,\"type\":\"randomisors\",\"count\":%d,\"values\":[",
             ORACLE_DUMP_VERSION, RANDOMISORS_LEN);
     for (int i = 0; i < RANDOMISORS_LEN; i++)
-        fprintf(vars->jsonl, "%s%d", i ? "," : "", (int)randomisors[i]);
-    fprintf(vars->jsonl, "]}\n");
+        fprintf(oracle_jsonl, "%s%d", i ? "," : "", (int)randomisors[i]);
+    fprintf(oracle_jsonl, "]}\n");
 
     // Tier B — the isometric per-(subtile,height) shade_intensity captured during rendering: DK's terrain
     // vertex shade *including* the randomisors dither the keeper-rx column walk must reproduce.
-    oracle_dump_iso_shade("oracle_iso_shade_t18.bin", get_gameturn());
+    oracle_dump_iso_shade("oracle_iso_shade_t18.bin", tick);
+}
 
-    if (vars->jsonl != NULL)
+void ftest_oracle_close(void)
+{
+    if (oracle_jsonl != NULL)
     {
-        fclose(vars->jsonl);
-        vars->jsonl = NULL;
+        fclose(oracle_jsonl);
+        oracle_jsonl = NULL;
     }
-    vars->dumped = true;
+}
+
+// --- The standalone spike: a thin wrapper over the shared dump, for MODE=oracle -----------------------
+
+TbBool ftest_oracle_spike_init()
+{
+    // Fire every turn from the start; the action self-terminates at the target tick.
+    ftest_append_action(ftest_oracle_spike_action001__dump, 0, NULL);
+    return true;
+}
+
+FTestActionResult ftest_oracle_spike_action001__dump(struct FTestActionArgs* const args)
+{
+    (void)args;
+    static TbBool setup_done = false;
+
+    struct Thing* heartng = get_player_soul_container(PLAYER0);
+    if (thing_is_invalid(heartng))
+    {
+        FTEST_FAIL_TEST("oracle: PLAYER0 has no dungeon heart on map302 (is -campaign classic set?)");
+        return FTRs_Go_To_Next_Action;
+    }
+
+    if (!setup_done)
+    {
+        // Isolate the deterministic light field: clear the heart light's flicker bits so
+        // render_intensity = intensity<<8 (no UNSYNC_RANDOM term). See dump-format.md "Flicker".
+        game.lish.lights[heartng->light_id].flags2 &= ~0xFE;
+        // Camera on the heart (its dynamic light renders near the camera) — the documented default view.
+        ftest_util_reveal_map(PLAYER0);
+        ftest_util_move_camera_to_thing(heartng, PLAYER0);
+        // Suspend the mouse so live pointer movement can't pan/zoom the camera and drift the frame the
+        // iso-shade is captured from (the parity ftest does the same for its shots).
+        LbMouseSuspend();
+        ftest_oracle_begin(ORACLE_TARGET_TICK);
+        if (oracle_jsonl == NULL)
+        {
+            FTEST_FRAMEWORK_ABORT("oracle: could not open JSONL output");
+            return FTRs_Go_To_Next_Action;
+        }
+        setup_done = true;
+    }
+
+    ftest_oracle_write_heartbeat();
+
+    if (get_gameturn() < oracle_target_tick)
+        return FTRs_Repeat_Current_Action;
+
+    ftest_oracle_write_dumps(get_gameturn());
+    ftest_oracle_close();
     FTESTLOG("oracle: dump complete at tick %ld", (long)get_gameturn());
     return FTRs_Go_To_Next_Action; // completes the test -> game auto-exits
 }
