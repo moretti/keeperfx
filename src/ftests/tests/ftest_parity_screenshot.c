@@ -77,8 +77,9 @@ static struct ftest_parity_screenshot__variables ftest_parity_screenshot__vars =
     .setup_done = false,
 };
 
-// forward declaration
+// forward declarations
 FTestActionResult ftest_parity_screenshot_action001__capture(struct FTestActionArgs* const args);
+static void parity_write_oracle_object(FILE* f, const struct Camera* cam, GameTurn tick);
 
 // The parity scene this run captures — a numbered, meaningful name describing the behaviour under test
 // (e.g. "001-dungeon-heart-beat", "002-game-start"). keeper-rx groups a scene's frames in a folder of
@@ -173,11 +174,12 @@ static TbBool tick_is_a_shot(GameTurn tick)
     return false;
 }
 
-// Write the metadata sidecar that lets keeper-rx reproduce this exact shot (schema:
-// keeper-rx/docs/design/parity-snapshot-harness.md). Every value is read live from the engine — the
-// camera especially, since its zoom drifts run to run and must be recorded, not assumed.
-static void parity_write_metadata(const char* path, LevelNumber map, GameTurn tick,
-                                  const struct Camera* cam, int width, int height)
+// Write the per-frame json: the metadata that lets keeper-rx reproduce this exact shot PLUS the numeric
+// oracle for it, nested under "oracle" (one file per frame, not a separate t<tick>.oracle.json). Every
+// value is read live from the engine — the camera especially, since its zoom drifts run to run and must
+// be recorded, not assumed. Schema: keeper-rx/docs/design/parity-snapshot-harness.md.
+static void parity_write_frame_json(const char* path, LevelNumber map, GameTurn tick,
+                                    const struct Camera* cam, int width, int height)
 {
     FILE* f = fopen(path, "w");
     if (f == NULL)
@@ -199,12 +201,15 @@ static void parity_write_metadata(const char* path, LevelNumber map, GameTurn ti
         "  \"resolution\": [%d, %d],\n"
         "  \"camera\": { \"focusSubtile\": [%.3f, %.3f], \"zoom\": %d, \"rotation\": [%d, %d, %d] },\n"
         "  \"viewMode\": \"%s\",\n"
-        "  \"flicker\": false\n"
-        "}\n",
+        "  \"flicker\": false,\n"
+        "  \"oracle\": ",
         VER_STRING, parity_scene(), (long)map, (long)tick, width, height,
         focus_x, focus_y, (int)cam->zoom,
         (int)cam->rotation_angle_x, (int)cam->rotation_angle_y, (int)cam->rotation_angle_z,
         view_mode);
+    // Nest the numeric oracle for this frame as the "oracle" value, then close the top-level object.
+    parity_write_oracle_object(f, cam, tick);
+    fprintf(f, "\n}\n");
     fclose(f);
     FTESTLOG("parity: wrote '%s'", path);
 }
@@ -215,11 +220,8 @@ static void parity_write_metadata(const char* path, LevelNumber map, GameTurn ti
 // window is derived from the render, not guessed. It dumps the light SOURCES (inputs) and the per-subtile
 // lightness + per-thing shade (the OUTPUTS the picture is shaded from); comparing both localises a
 // lighting mismatch to setup (inputs differ) vs computation (inputs match, output differs).
-static void parity_write_oracle(const char* path, const struct Camera* cam, GameTurn tick)
+static void parity_write_oracle_object(FILE* f, const struct Camera* cam, GameTurn tick)
 {
-    FILE* f = fopen(path, "w");
-    if (f == NULL) { FTESTLOG("parity: failed to open '%s'", path); return; }
-
     MapSubtlCoord fx = cam->mappos.x.val >> 8;
     MapSubtlCoord fy = cam->mappos.y.val >> 8;
     long r = cells_away; // the view radius the engine drew with this frame
@@ -288,9 +290,7 @@ static void parity_write_oracle(const char* path, const struct Camera* cam, Game
             fprintf(f, "%s%d", (sx == x0) ? "" : ",", (int)get_subtile_lightness(&game.lish, sx, sy));
         fprintf(f, "]");
     }
-    fprintf(f, "\n  ]\n}\n");
-    fclose(f);
-    FTESTLOG("parity: wrote '%s'", path);
+    fprintf(f, "\n  ]\n  }");
 }
 
 TbBool ftest_parity_screenshot_init(void)
@@ -405,18 +405,16 @@ FTestActionResult ftest_parity_screenshot_action001__capture(struct FTestActionA
         snprintf(base, sizeof(base), "%s/t%ld", parity_out_dir(), (long)tick);
         char png_path[300];
         char json_path[300];
-        char oracle_path[320];
         snprintf(png_path, sizeof(png_path), "%s.png", base);
         snprintf(json_path, sizeof(json_path), "%s.json", base);
-        snprintf(oracle_path, sizeof(oracle_path), "%s.oracle.json", base);
 
         if (parity_save_png_opaque(png_path))
             FTESTLOG("parity: shot tick %ld -> '%s'", (long)tick, png_path);
         else
             FTESTLOG("parity: FAILED screenshot at tick %ld", (long)tick);
 
-        parity_write_metadata(json_path, map, tick, cam, width, height);
-        parity_write_oracle(oracle_path, cam, tick);
+        // One json per frame: reproduce-metadata with the numeric oracle nested under "oracle".
+        parity_write_frame_json(json_path, map, tick, cam, width, height);
 
         // At the oracle tick, this launch also emits the full numeric dump. keeper_screen_redraw() above
         // has just drawn the heart-centred frame, so the iso-shade capture reflects exactly this shot.
