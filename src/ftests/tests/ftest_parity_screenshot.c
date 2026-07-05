@@ -127,11 +127,11 @@ static int parity_zoom(void)
     return (v != NULL && sscanf(v, "%d", &z) == 1 && z > 0) ? z : PARITY_ZOOM;
 }
 
-// Optional: KEEPERFX_PARITY_HAND_LIGHT="x0,y0;x1,y1;..." keeps the player's cursor/hand light (instead of
-// deleting it) and drives it along this route — one waypoint per shot (the ordinal in PARITY_SHOT_TICKS),
-// holding the last past the end. A headless capture has no mouse, so this is how the pool is placed at a
-// known subtile and recorded; keeper-rx reads the per-frame position from the json and matches it. Unset →
-// the light is deleted, the default cursor-free shot.
+// Optional: KEEPERFX_PARITY_HAND_LIGHT="x0,y0;x1,y1;..." keeps the game's hand light and tile-selection
+// box (the default parity shot deletes/hides them) and DRIVES them along this route, one waypoint per shot
+// (the ordinal in PARITY_SHOT_TICKS, holding the last past the end). A parity shot suspends the mouse, so
+// set_mouse_light/tag_cursor never run for the captured frame — we move the light and set the box directly
+// here instead, simulating the hover. keeper-rx reads the per-frame subtile from the json and matches it.
 static TbBool parity_hand_light_enabled(void)
 {
     const char* v = getenv("KEEPERFX_PARITY_HAND_LIGHT");
@@ -154,9 +154,9 @@ static TbBool parity_hand_light_at(int shot_index, int* out_x, int* out_y)
             break;
         x = cx; y = cy; have = true;
         if (i >= shot_index)
-            break;                       // reached the requested waypoint
+            break;
         i++;
-        for (p += consumed; *p == ';' || *p == ' '; p++) { } // step past the separator
+        for (p += consumed; *p == ';' || *p == ' '; p++) { }
     }
     if (!have)
         return false;
@@ -164,8 +164,7 @@ static TbBool parity_hand_light_at(int shot_index, int* out_x, int* out_y)
     return true;
 }
 
-// The ordinal of a shot tick within PARITY_SHOT_TICKS (0-based), or -1 if it isn't a shot tick — used to
-// index the hand-light route so the pool advances one waypoint per captured frame.
+// The ordinal of a shot tick within PARITY_SHOT_TICKS (0-based), or -1 if it isn't one.
 static int parity_shot_index(GameTurn tick)
 {
     for (int i = 0; i < PARITY_SHOT_COUNT; i++)
@@ -400,20 +399,28 @@ FTestActionResult ftest_parity_screenshot_action001__capture(struct FTestActionA
         // handle (set_mouse_light then early-returns and light_turn_light_on is a no-op); to shoot WITH it
         // we keep it, freeze its flicker like the heart, and drive its position ourselves each shot below.
         struct PlayerInfo* plyr0 = get_player(PLAYER0);
-        if (plyr0->cursor_light_idx != 0)
+        if (parity_hand_light_enabled())
         {
-            if (parity_hand_light_enabled())
-                game.lish.lights[plyr0->cursor_light_idx].flags2 &= ~0xFE; // freeze its flicker, keep it
-            else
+            // Keep the game's normal hand light AND tile-selection box, but drive them ourselves. A parity
+            // shot suspends the mouse and forces a one-off redraw in gameplay_loop_logic, so the game's own
+            // hover path (set_mouse_light + tag_cursor, which run from packet processing) never lights or
+            // tags a tile for the captured frame. We instead freeze the cursor light's flicker here, and per
+            // shot (below) place the light and set the selection box at the hovered subtile ourselves.
+            if (plyr0->cursor_light_idx != 0)
+                game.lish.lights[plyr0->cursor_light_idx].flags2 &= ~0xFE;
+        }
+        else
+        {
+            // Cursor-free shot: delete the cursor light and suspend the mouse so neither its glow nor the
+            // selection box appears.
+            if (plyr0->cursor_light_idx != 0)
             {
                 light_delete_light(plyr0->cursor_light_idx);
                 plyr0->cursor_light_idx = 0;
             }
+            LbMouseSetPosition(MyScreenWidth - 1, MyScreenHeight - 1);
+            LbMouseSuspend();
         }
-        // Suspend the mouse so live pointer movement can't pan/zoom the camera during the capture (the
-        // parked position is irrelevant to lighting now that the cursor light is gone).
-        LbMouseSetPosition(MyScreenWidth - 1, MyScreenHeight - 1);
-        LbMouseSuspend();
         // Draw the camera we force, not a smoothed copy of it. The isometric view is rendered from a
         // separate "local camera" — get_local_camera() (local_camera.c) returns local_cameras[Iso],
         // whose zoom/position are a filter chasing the real camera over several frames
@@ -478,25 +485,65 @@ FTestActionResult ftest_parity_screenshot_action001__capture(struct FTestActionA
 
         // Clear any on-screen messages (the ftest banner, event popups) so they don't overlay the shot.
         zero_messages();
-        // Hide the tile-selection box (the green cursor outline) — it follows the pointer and is UI our
-        // renderer never draws, so it would be a spurious diff.
-        map_volume_box.visible = 0;
-        // Drive the hand light for this shot: place it on the floor of its scripted subtile and turn it on
-        // (set_mouse_light can't — the mouse is suspended). Done right before the redraw so the shot has it
-        // on; the json below records where, so keeper-rx places its own pool at the same subtile.
+
+        // The hand light + tile-selection box for this shot. A cursor-free scene hides the box; the
+        // hand-light scene simulates a hover at a chosen subtile — driving the light and the box exactly as
+        // set_mouse_light and tag_cursor_on_map_volume_box would, since neither runs for our forced redraw.
         int hl_x = 0, hl_y = 0;
         TbBool hl_on = false;
-        if (parity_hand_light_enabled() && player->cursor_light_idx != 0
-            && parity_hand_light_at(parity_shot_index(tick), &hl_x, &hl_y))
+        if (!parity_hand_light_enabled())
         {
-            struct Coord3d hlpos;
-            hlpos.x.val = (hl_x << 8) + (int)(PARITY_COORDS_PER_SUBTILE / 2);
-            hlpos.y.val = (hl_y << 8) + (int)(PARITY_COORDS_PER_SUBTILE / 2);
-            hlpos.z.val = get_floor_height_at(&hlpos);
+            map_volume_box.visible = 0;
+        }
+        else if (player->cursor_light_idx != 0)
+        {
+            // Route: KEEPERFX_PARITY_HAND_LIGHT gives a per-shot subtile ("x,y;x,y;…"); if it's just a flag
+            // with no waypoints, hover the framed (camera-centre) tile so it lands where the shot is aimed.
+            int stl_x, stl_y;
+            if (!parity_hand_light_at(parity_shot_index(tick), &stl_x, &stl_y))
+            {
+                stl_x = coord_subtile(cam->mappos.x.val);
+                stl_y = coord_subtile(cam->mappos.y.val);
+            }
+            // Position the light at the subtile centre, floored to the terrain height there (set_mouse_light).
+            struct Coord3d pos;
+            pos.x.val = subtile_coord_center(stl_x);
+            pos.y.val = subtile_coord_center(stl_y);
+            pos.z.val = get_floor_height_at(&pos);
+            game.mouse_light_pos = pos;
             light_turn_light_on(player->cursor_light_idx);
-            light_set_light_position(player->cursor_light_idx, &hlpos);
+            light_set_light_position(player->cursor_light_idx, &pos);
+            // light_render_light interpolates a light from its previous position over several frames; on a
+            // single frozen shot that renders the just-moved cursor light lagging behind (toward its old
+            // off-map spot). Clearing interp_has_been_initialized makes the render snap it to the position we
+            // just set rather than tween from where it was.
+            game.lish.lights[player->cursor_light_idx].interp_has_been_initialized = false;
+            // The yellow selection outline over the hovered slab (the default full-slab cursor box, matching
+            // tag_cursor_blocks_thing_in_hand's full_slab branch in cursor_tag.c — 3x3 subtiles, not one).
+            MapSlabCoord slb_x = subtile_slab(stl_x);
+            MapSlabCoord slb_y = subtile_slab(stl_y);
+            map_volume_box.visible = 1;
+            map_volume_box.color = SLC_YELLOW;
+            map_volume_box.beg_x = subtile_coord(slab_subtile(slb_x, 0), 0);
+            map_volume_box.beg_y = subtile_coord(slab_subtile(slb_y, 0), 0);
+            map_volume_box.end_x = subtile_coord(slab_subtile(slb_x, 0) + STL_PER_SLB, 0);
+            map_volume_box.end_y = subtile_coord(slab_subtile(slb_y, 0) + STL_PER_SLB, 0);
+            map_volume_box.floor_height_z = floor_height_for_volume_box(PLAYER0, slb_x, slb_y);
+            // Force the render's basic-box path (process_isometric_map_volume_box). It otherwise draws the
+            // "fancy" box from player->render_roomspace geometry — which we never populate by hovering — so it
+            // would ignore the coords above and draw a stray box. These two flags select create_map_volume_box,
+            // which draws exactly map_volume_box.beg/end.
+            player->render_roomspace.render_roomspace_as_box = true;
+            player->render_roomspace.is_roomspace_a_box = true;
+            hl_x = stl_x;
+            hl_y = stl_y;
             hl_on = true;
         }
+        // Recompute the dynamic light render area for the pose/positions we just forced. gameplay_loop_draw
+        // normally does this right before drawing; our forced redraw runs earlier (in gameplay_loop_logic),
+        // so without this the frame would light from the PREVIOUS turn's light map — the just-moved cursor
+        // light would glow at its old spot, not where we placed it this shot.
+        update_light_render_area();
         // The ftest fires in gameplay_loop_logic, before gameplay_loop_draw, so the on-screen frame is
         // still the previous turn's. Force a redraw so the captured PNG is exactly this turn's state.
         keeper_screen_redraw();
