@@ -15,6 +15,9 @@
 #include "../../keeperfx.hpp"
 #include "../../dungeon_data.h"
 #include "../../light_data.h"
+#include "../../game_lghtshdw.h"
+#include "../../engine_render.h"
+#include "../../engine_arrays.h"
 #include "../../config_objects.h"
 #include "../../thing_objects.h"
 #include "../../map_data.h"
@@ -43,6 +46,7 @@ extern "C" {
 // Probe ids in the binary header.
 #define ORACLE_PROBE_SUBTILE_LIGHTNESS 1u
 #define ORACLE_PROBE_STAT_LIGHT_MAP    2u
+#define ORACLE_PROBE_ISO_SHADE         3u   // per-(subtile,height) shade_intensity, a 3D array (depth = heights)
 
 struct ftest_oracle_spike__variables
 {
@@ -123,6 +127,37 @@ static void oracle_dump_array(const char* filename, unsigned int probe_id, GameT
     fclose(f);
 }
 
+// Dump the captured per-(subtile,height) shade_intensity (Tier B, 3D). The header adds a depth field
+// (column height) after width/height; payload is plane-major (height slowest), then the same stl_x-fastest
+// row-major order as the 2D arrays. 0xFFFF marks a (subtile,height) the frame didn't render (off-screen /
+// above the column). Only the isometric fill writes this (fill_in_points_isometric), so it is the terrain
+// shade *including* the randomisors dither — the ground truth the keeper-rx column-walk port diffs against.
+#ifdef FUNCTESTING
+static void oracle_dump_iso_shade(const char* filename, GameTurn tick)
+{
+    FILE* f = oracle_open(filename, "wb");
+    if (f == NULL)
+        return;
+
+    fwrite(ORACLE_BIN_MAGIC, 1, 8, f);
+    write_u32_le(f, ORACLE_DUMP_VERSION);
+    write_u32_le(f, ORACLE_PROBE_ISO_SHADE);
+    write_u32_le(f, (unsigned int)tick);
+    write_u32_le(f, ORACLE_DUMP_STRIDE);          // width  (stl_x)
+    write_u32_le(f, ORACLE_DUMP_STRIDE);          // height (stl_y)
+    write_u32_le(f, ORACLE_ISO_SHADE_HEIGHTS);    // depth  (column height)
+    write_u32_le(f, 2u);                          // elem_bytes (u16)
+
+    for (int h = 0; h < ORACLE_ISO_SHADE_HEIGHTS; h++)
+        for (MapSubtlCoord stl_y = 0; stl_y < ORACLE_DUMP_STRIDE; stl_y++)
+            for (MapSubtlCoord stl_x = 0; stl_x < ORACLE_DUMP_STRIDE; stl_x++)
+                write_u16_le(f, oracle_iso_shade[h * (MAX_SUBTILES_X * MAX_SUBTILES_Y)
+                                                 + get_subtile_number(stl_x, stl_y)]);
+
+    fclose(f);
+}
+#endif
+
 TbBool ftest_oracle_spike_init()
 {
     // Fire every turn from the start; the action self-terminates at the target tick.
@@ -151,6 +186,8 @@ FTestActionResult ftest_oracle_spike_action001__dump(struct FTestActionArgs* con
         // Camera on the heart (its dynamic light renders near the camera) — the documented default view.
         ftest_util_reveal_map(PLAYER0);
         ftest_util_move_camera_to_thing(heartng, PLAYER0);
+        // Start capturing the isometric per-vertex shade_intensity so the dump tick holds a full frame.
+        oracle_iso_shade_reset();
 
         vars->jsonl = oracle_open("oracle_heartbeat_t18.jsonl", "w");
         if (vars->jsonl == NULL)
@@ -191,10 +228,49 @@ FTestActionResult ftest_oracle_spike_action001__dump(struct FTestActionArgs* con
         (int)coord_subtile(lgt->mappos.x.val), (int)coord_subtile(lgt->mappos.y.val),
         (int)lgt->flags2, ORACLE_DUMP_STRIDE, ORACLE_DUMP_STRIDE);
 
+    // Tier A — the heart sprite's ground-truth shade: get_thing_shade bilinearly samples the same
+    // subtile_lightness array (dumped below) at the heart's four surrounding subtiles, floored at the
+    // owner's thing_minimum_illumination and clamped, giving the 0..64 fade-table row the blit uses
+    // (engine_render.c:7525, :4958). We dump its inputs and result so keeper-rx can diff its own
+    // GetThingShade port bit-exact. lgh indexing matches the C's lgh[y][x].
+    {
+        MapSubtlCoord sx = heartng->mappos.x.stl.num;
+        MapSubtlCoord sy = heartng->mappos.y.stl.num;
+        long lgh00 = get_subtile_lightness(&game.lish, sx,     sy);
+        long lgh01 = get_subtile_lightness(&game.lish, sx + 1, sy);
+        long lgh10 = get_subtile_lightness(&game.lish, sx,     sy + 1);
+        long lgh11 = get_subtile_lightness(&game.lish, sx + 1, sy + 1);
+        unsigned short shade = get_thing_shade(heartng);
+        fprintf(vars->jsonl,
+            "{\"v\":%d,\"type\":\"thing_shade\",\"tick\":%ld,\"thing_idx\":%d,\"model\":%d,"
+            "\"rendering_flags\":%d,\"owner\":%d,\"min_illum\":%d,\"pos_x\":%d,\"pos_y\":%d,\"pos_z\":%d,"
+            "\"stl_x\":%d,\"stl_y\":%d,\"fract_x\":%d,\"fract_y\":%d,"
+            "\"lgh00\":%ld,\"lgh01\":%ld,\"lgh10\":%ld,\"lgh11\":%ld,\"shade\":%d,\"shade_row\":%d}\n",
+            ORACLE_DUMP_VERSION, (long)get_gameturn(), (int)heartng->index, (int)heartng->model,
+            (int)heartng->rendering_flags, (int)heartng->owner,
+            (int)game.conf.rules[heartng->owner].gameplay.thing_minimum_illumination,
+            (int)heartng->mappos.x.val, (int)heartng->mappos.y.val, (int)heartng->mappos.z.val,
+            (int)sx, (int)sy, (int)heartng->mappos.x.stl.pos, (int)heartng->mappos.y.stl.pos,
+            lgh00, lgh01, lgh10, lgh11, (int)shade, (int)(shade >> 8));
+    }
+
     oracle_dump_array("oracle_subtile_lightness_t18.bin", ORACLE_PROBE_SUBTILE_LIGHTNESS,
                       get_gameturn(), game.lish.subtile_lightness);
     oracle_dump_array("oracle_stat_light_map_t18.bin", ORACLE_PROBE_STAT_LIGHT_MAP,
                       get_gameturn(), game.lish.stat_light_map);
+
+    // Tier B — the deterministic mesh randomisors (setup_mesh_randomizers, seed 0x0f0f0f0f). Pure code
+    // output (not copyrighted map data), so the keeper-rx port asserts its LbRandomSeries table against
+    // these exactly. Emitted as one JSONL record (512 small ints ~2KB).
+    fprintf(vars->jsonl, "{\"v\":%d,\"type\":\"randomisors\",\"count\":%d,\"values\":[",
+            ORACLE_DUMP_VERSION, RANDOMISORS_LEN);
+    for (int i = 0; i < RANDOMISORS_LEN; i++)
+        fprintf(vars->jsonl, "%s%d", i ? "," : "", (int)randomisors[i]);
+    fprintf(vars->jsonl, "]}\n");
+
+    // Tier B — the isometric per-(subtile,height) shade_intensity captured during rendering: DK's terrain
+    // vertex shade *including* the randomisors dither the keeper-rx column walk must reproduce.
+    oracle_dump_iso_shade("oracle_iso_shade_t18.bin", get_gameturn());
 
     if (vars->jsonl != NULL)
     {

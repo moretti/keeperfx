@@ -1325,6 +1325,27 @@ static void fill_in_points_cluedo(struct Camera *cam, long bstl_x, long bstl_y, 
     }
 }
 
+#ifdef FUNCTESTING
+// Oracle capture (keeper-rx terrain shade-dither port) — see engine_render.h. The isometric fill records
+// each column vertex's shade_intensity here when enabled; the oracle_spike ftest dumps it as ground truth.
+// Sized and indexed like the light arrays (get_subtile_number); one plane per column height 0..8.
+unsigned short oracle_iso_shade[ORACLE_ISO_SHADE_HEIGHTS * MAX_SUBTILES_X * MAX_SUBTILES_Y];
+TbBool oracle_iso_shade_on = false;
+
+void oracle_iso_shade_reset(void)
+{
+    memset(oracle_iso_shade, 0xFF, sizeof(oracle_iso_shade)); // 0xFFFF = this (subtile,height) not rendered
+    oracle_iso_shade_on = true;
+}
+
+static void oracle_capture_iso_shade(MapSubtlCoord stl_x, MapSubtlCoord stl_y, int height, unsigned short shade)
+{
+    if (!oracle_iso_shade_on || height < 0 || height >= ORACLE_ISO_SHADE_HEIGHTS)
+        return;
+    oracle_iso_shade[height * (MAX_SUBTILES_X * MAX_SUBTILES_Y) + get_subtile_number(stl_x, stl_y)] = shade;
+}
+#endif
+
 static void fill_in_points_isometric(struct Camera *cam, long bstl_x, long bstl_y, struct MinMax *mm)
 {
     if ((bstl_y < 0) || (bstl_y > game.map_subtiles_y-1)) {
@@ -1518,6 +1539,9 @@ static void fill_in_points_isometric(struct Camera *cam, long bstl_x, long bstl_
             if (lightness > 15872)
                 lightness = 15872;
             ecord->shade_intensity = lightness;
+#ifdef FUNCTESTING
+            oracle_capture_iso_shade(stl_x, stl_y, (int)(ecord - &ecol->cors[0]), (unsigned short)lightness);
+#endif
             if (ecord->z < 32) {
                 ecord->z = 0;
             } else

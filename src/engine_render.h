@@ -148,6 +148,18 @@ void draw_status_sprites(long a1, long a2, struct Thing *thing);
 void draw_map_volume_box(long cor1_x, long cor1_y, long cor2_x, long cor2_y, long floor_height_z, unsigned char color);
 
 unsigned short get_thing_shade(struct Thing *thing); // exposed for the oracle-dump ftest (keeper-rx)
+
+#ifdef FUNCTESTING
+// Oracle capture for the keeper-rx terrain shade-dither port: the isometric fill records each
+// (subtile, height) shade_intensity here when enabled, so the oracle_spike ftest can dump DK's
+// ground-truth per-vertex shade (the randomisors dither fill_in_points_isometric adds up each column).
+// Heights 0..8 (column cubes); indexed by get_subtile_number, like the subtile_lightness array.
+#define ORACLE_ISO_SHADE_HEIGHTS 9
+extern unsigned short oracle_iso_shade[];
+extern TbBool oracle_iso_shade_on;
+void oracle_iso_shade_reset(void); // clear to the 0xFFFF "not captured" sentinel, then enable capture
+#endif
+
 void update_engine_settings(struct PlayerInfo *player);
 void draw_view(struct Camera *cam, unsigned char a2);
 void draw_frontview_engine(struct Camera *cam);
