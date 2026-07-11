@@ -137,13 +137,12 @@ FTestActionResult ftest_creature_state_slap_action__run(struct FTestActionArgs* 
             FTEST_FRAMEWORK_ABORT("slap oracle: could not open the JSONL output");
             return FTRs_Go_To_Next_Action;
         }
-        const char* prov_binary = getenv("KEEPERFX_ORACLE_BINARY");
         const char* prov_build  = getenv("KEEPERFX_ORACLE_BUILD");
         fprintf(slap_jsonl,
             "{\"v\":%d,\"type\":\"meta\",\"probe\":\"creature_state_slap\",\"cower_turns\":%d,"
-            "\"engine\":\"keeperfx-oracle-dumps\",\"version\":\"%s\",\"binary\":\"%s\",\"build\":\"%s\"}\n",
+            "\"engine\":\"keeperfx-oracle-dumps\",\"version\":\"%s\",\"build\":\"%s\"}\n",
             CREATURE_STATE_SLAP_ORACLE_VERSION, SLAP_DUMP_TURNS, VER_STRING,
-            prov_binary ? prov_binary : "", prov_build ? prov_build : "");
+            prov_build ? prov_build : "");
     }
 
     slap_dump(slap_jsonl, slap_imp);

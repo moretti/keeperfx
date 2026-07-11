@@ -214,14 +214,13 @@ FTestActionResult ftest_movement_oracle_action__run_scenario(struct FTestActionA
             return FTRs_Go_To_Next_Action;
         }
         // Provenance echo so a stray dump is regeneratable from its meta line alone (matches oracle_spike).
-        const char* prov_binary = getenv("KEEPERFX_ORACLE_BINARY");
         const char* prov_build  = getenv("KEEPERFX_ORACLE_BUILD");
         fprintf(movement_jsonl,
             "{\"v\":%d,\"type\":\"meta\",\"probe\":\"movement\",\"scenario\":\"%s\",\"move_speed\":%d,"
             "\"move_angle_xy\":%d,\"engine\":\"keeperfx-oracle-dumps\",\"version\":\"%s\","
-            "\"binary\":\"%s\",\"build\":\"%s\"}\n",
+            "\"build\":\"%s\"}\n",
             MOVEMENT_ORACLE_VERSION, scn->name, (int)scn->move_speed, (int)scn->move_angle_xy, VER_STRING,
-            prov_binary ? prov_binary : "", prov_build ? prov_build : "");
+            prov_build ? prov_build : "");
     }
     else
     {

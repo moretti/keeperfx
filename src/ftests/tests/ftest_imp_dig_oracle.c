@@ -183,15 +183,14 @@ FTestActionResult ftest_imp_dig_oracle_action__run(struct FTestActionArgs* const
         }
         FTESTLOG("imp dig oracle: writing '%s'", path);
 
-        const char* prov_binary = getenv("KEEPERFX_ORACLE_BINARY");
         const char* prov_build  = getenv("KEEPERFX_ORACLE_BUILD");
         fprintf(imp_dig_jsonl,
             "{\"v\":%d,\"type\":\"meta\",\"probe\":\"imp_dig\",\"level\":%d,\"campaign\":\"classic\","
             "\"tile_slb_x\":%d,\"tile_slb_y\":%d,\"spawn_stl_x\":%d,\"spawn_stl_y\":%d,"
-            "\"engine\":\"keeperfx-oracle-dumps\",\"version\":\"%s\",\"binary\":\"%s\",\"build\":\"%s\"}\n",
+            "\"engine\":\"keeperfx-oracle-dumps\",\"version\":\"%s\",\"build\":\"%s\"}\n",
             IMP_DIG_ORACLE_VERSION, IMP_DIG_ORACLE_LEVEL, TILE_SLB_X, TILE_SLB_Y,
             SPAWN_STL_X, SPAWN_STL_Y, VER_STRING,
-            prov_binary ? prov_binary : "", prov_build ? prov_build : "");
+            prov_build ? prov_build : "");
     }
 
     imp_dig_dump(imp_dig_jsonl, imp_dig_imp);

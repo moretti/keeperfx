@@ -168,15 +168,14 @@ FTestActionResult ftest_imp_claim_oracle_action__run(struct FTestActionArgs* con
         }
         FTESTLOG("imp claim oracle: writing '%s'", path);
 
-        const char* prov_binary = getenv("KEEPERFX_ORACLE_BINARY");
         const char* prov_build  = getenv("KEEPERFX_ORACLE_BUILD");
         fprintf(imp_claim_jsonl,
             "{\"v\":%d,\"type\":\"meta\",\"probe\":\"imp_claim\",\"level\":%d,\"campaign\":\"classic\","
             "\"tile_slb_x\":%d,\"tile_slb_y\":%d,\"spawn_stl_x\":%d,\"spawn_stl_y\":%d,"
-            "\"engine\":\"keeperfx-oracle-dumps\",\"version\":\"%s\",\"binary\":\"%s\",\"build\":\"%s\"}\n",
+            "\"engine\":\"keeperfx-oracle-dumps\",\"version\":\"%s\",\"build\":\"%s\"}\n",
             IMP_CLAIM_ORACLE_VERSION, IMP_CLAIM_ORACLE_LEVEL, TILE_SLB_X, TILE_SLB_Y,
             SPAWN_STL_X, SPAWN_STL_Y, VER_STRING,
-            prov_binary ? prov_binary : "", prov_build ? prov_build : "");
+            prov_build ? prov_build : "");
     }
 
     imp_claim_dump(imp_claim_jsonl, imp_claim_imp);

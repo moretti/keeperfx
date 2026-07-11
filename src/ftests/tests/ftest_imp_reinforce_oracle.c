@@ -167,15 +167,14 @@ FTestActionResult ftest_imp_reinforce_oracle_action__run(struct FTestActionArgs*
         }
         FTESTLOG("imp reinforce oracle: writing '%s'", path);
 
-        const char* prov_binary = getenv("KEEPERFX_ORACLE_BINARY");
         const char* prov_build  = getenv("KEEPERFX_ORACLE_BUILD");
         fprintf(imp_reinforce_jsonl,
             "{\"v\":%d,\"type\":\"meta\",\"probe\":\"imp_reinforce\",\"level\":%d,\"campaign\":\"classic\","
             "\"wall_slb_x\":%d,\"wall_slb_y\":%d,\"spawn_stl_x\":%d,\"spawn_stl_y\":%d,"
-            "\"engine\":\"keeperfx-oracle-dumps\",\"version\":\"%s\",\"binary\":\"%s\",\"build\":\"%s\"}\n",
+            "\"engine\":\"keeperfx-oracle-dumps\",\"version\":\"%s\",\"build\":\"%s\"}\n",
             IMP_REINFORCE_ORACLE_VERSION, IMP_REINFORCE_ORACLE_LEVEL, WALL_SLB_X, WALL_SLB_Y,
             SPAWN_STL_X, SPAWN_STL_Y, VER_STRING,
-            prov_binary ? prov_binary : "", prov_build ? prov_build : "");
+            prov_build ? prov_build : "");
     }
 
     imp_reinforce_dump(imp_reinforce_jsonl, imp_reinforce_imp);
