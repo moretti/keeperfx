@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 
+#include <string.h>
+
 #include "../ftest.h"
 
 #include "../../keeperfx.hpp"
@@ -17,7 +19,14 @@
 #include "../../ariadne_tringls.h"
 #include "../../ariadne_points.h"
 #include "../../ariadne_regions.h"
+#include "../../thing_data.h"
+#include "../../thing_list.h"
+#include "../../thing_physics.h"
+#include "../../thing_creature.h"
 #include "../../ver_defs.h"
+
+// Defined (non-static) in ariadne.c but not declared in ariadne.h — the OnLine follower's block test.
+long ariadne_creature_blocked_by_wall_at(struct Thing *thing, const struct Coord3d *pos);
 
 #include "../../post_inc.h"
 
@@ -39,6 +48,7 @@ FTestActionResult ftest_ariadne_oracle_action__dump_mesh(struct FTestActionArgs*
 FTestActionResult ftest_ariadne_oracle_action__dump_regions(struct FTestActionArgs* const args);
 FTestActionResult ftest_ariadne_oracle_action__dump_route(struct FTestActionArgs* const args);
 FTestActionResult ftest_ariadne_oracle_action__dump_waypoints(struct FTestActionArgs* const args);
+FTestActionResult ftest_ariadne_oracle_action__dump_collision(struct FTestActionArgs* const args);
 
 TbBool ftest_ariadne_oracle_init()
 {
@@ -52,6 +62,7 @@ TbBool ftest_ariadne_oracle_init()
     ftest_append_action(ftest_ariadne_oracle_action__dump_regions, 0, NULL);
     ftest_append_action(ftest_ariadne_oracle_action__dump_route, 0, NULL);
     ftest_append_action(ftest_ariadne_oracle_action__dump_waypoints, 0, NULL);
+    ftest_append_action(ftest_ariadne_oracle_action__dump_collision, 0, NULL);
     return true;
 }
 
@@ -425,6 +436,108 @@ FTestActionResult ftest_ariadne_oracle_action__dump_waypoints(struct FTestAction
 
     fclose(f);
     FTESTLOG("ariadne oracle: dumped %u waypoint quer%s for level %ld -> %s", qcount, qcount == 1 ? "y" : "ies", level, path);
+    return FTRs_Go_To_Next_Action;
+}
+
+// D4 — the wall/floor collision primitives, for a spawned imp (keeper-rx Step 8a). One binary per level:
+//   magic "KFXNAVP\0" (8) | version u16 | level u16 | subtiles u16 | pad u16
+//   Section A: subtiles*subtiles bytes, row-major (y outer, x inner) — for the imp standing at each subtile
+//     centre: bits 0-3 = get_floor_height_under_thing_at (in subtiles), bit 4 = thing_in_wall_at.
+//   Section B: source_x i32 | source_y i32 | ceil(subtiles*subtiles / 8) bytes, a bitmap (LSB-first,
+//     row-major) of ariadne_creature_blocked_by_wall_at(imp@source, subtile-centre) — the OnLine block test
+//     (creature_cannot_move_directly_to) from the level's first route-query start to every subtile.
+FTestActionResult ftest_ariadne_oracle_action__dump_collision(struct FTestActionArgs* const args)
+{
+    (void)args;
+    const long level = (long)get_loaded_level_number();
+    const unsigned int n = ARIADNE_ORACLE_SUBTILES;
+
+    // Use a stack-local imp rather than a spawned creature: the synthetic fixtures have no player dungeon,
+    // so ftest_util_create_creature would deref a null dungeon. The collision primitives read only the
+    // thing's clipbox size-xy/z and mappos. A stack pointer lies outside game.things_data[], so
+    // thing_is_invalid() (hence thing_is_creature()) reads false — which makes the size functions take the
+    // NON-creature branch (size = clipbox_size_xy) instead of thing_nav_sizexy. So we set clipbox_size_xy to
+    // the imp's *nav* size 206 (= thing_nav_sizexy for the imp's config Size-xy of 200,
+    // config/creatrs/imp.cfg via actual_sizexy_to_nav_sizexy_table), giving the same radius (103) a real imp
+    // gets through the creature branch. The collision footprint — and thus the dump — is bit-identical to a
+    // real imp's; keeper-rx's ThingPhysics uses nav size 206 / clipbox z 256 to match.
+    unsigned int qcount = 0;
+    const struct AriadneOracleQuery* queries = ariadne_oracle_queries_for(level, &qcount);
+    const int spawn_stl_x = (qcount > 0) ? queries[0].start_stl_x : (int)(n / 2);
+    const int spawn_stl_y = (qcount > 0) ? queries[0].start_stl_y : (int)(n / 2);
+    struct Thing imp_storage;
+    memset(&imp_storage, 0, sizeof(struct Thing));
+    struct Thing* imp = &imp_storage;
+    imp->class_id = TCls_Creature;
+    imp->clipbox_size_xy = 206; // imp thing_nav_sizexy (see comment above)
+    imp->clipbox_size_z = 256;  // imp config Size-z
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/oracle_ariadne_collision_%05ld.bin", ariadne_out_dir(), level);
+    FILE* f = fopen(path, "wb");
+    if (f == NULL)
+    {
+        FTEST_FRAMEWORK_ABORT("ariadne oracle: failed to open '%s'", path);
+        return FTRs_Go_To_Next_Action;
+    }
+
+    fwrite("KFXNAVP\0", 1, 8, f);
+    fput_u16_le(f, ARIADNE_ORACLE_VERSION);
+    fput_u16_le(f, (unsigned int)(level & 0xFFFF));
+    fput_u16_le(f, n);
+    fput_u16_le(f, 0); // pad
+
+    // Section A: per-subtile floor height + in-wall.
+    for (unsigned int y = 0; y < n; y++)
+    {
+        for (unsigned int x = 0; x < n; x++)
+        {
+            struct Coord3d c;
+            c.x.val = ARIADNE_ORACLE_STL_CENTRE(x);
+            c.y.val = ARIADNE_ORACLE_STL_CENTRE(y);
+            c.z.val = 0;
+            long floor_z = get_floor_height_under_thing_at(imp, &c);
+            c.z.val = floor_z;
+            int in_wall = thing_in_wall_at(imp, &c) ? 1 : 0;
+            int fh = (int)(floor_z >> 8) & 0x0F;
+            fputc(fh | (in_wall ? 0x10 : 0), f);
+        }
+    }
+
+    // Section B: cannot-move-directly bitmap from the first route query's start (= the spawn tile).
+    long src_x = ARIADNE_ORACLE_STL_CENTRE(spawn_stl_x);
+    long src_y = ARIADNE_ORACLE_STL_CENTRE(spawn_stl_y);
+    imp->mappos.x.val = src_x;
+    imp->mappos.y.val = src_y;
+    imp->mappos.z.val = get_thing_height_at(imp, &imp->mappos);
+    fput_u32_le(f, (unsigned int)src_x);
+    fput_u32_le(f, (unsigned int)src_y);
+
+    unsigned char bitbuf = 0;
+    int bitcnt = 0;
+    for (unsigned int y = 0; y < n; y++)
+    {
+        for (unsigned int x = 0; x < n; x++)
+        {
+            struct Coord3d t;
+            t.x.val = ARIADNE_ORACLE_STL_CENTRE(x);
+            t.y.val = ARIADNE_ORACLE_STL_CENTRE(y);
+            t.z.val = 0;
+            int cant = ariadne_creature_blocked_by_wall_at(imp, &t) ? 1 : 0;
+            bitbuf |= (unsigned char)(cant << bitcnt);
+            if (++bitcnt == 8)
+            {
+                fputc(bitbuf, f);
+                bitbuf = 0;
+                bitcnt = 0;
+            }
+        }
+    }
+    if (bitcnt > 0)
+        fputc(bitbuf, f);
+
+    fclose(f);
+    FTESTLOG("ariadne oracle: dumped %ux%u collision map for level %ld -> %s", n, n, level, path);
     return FTRs_Go_To_Next_Action;
 }
 
