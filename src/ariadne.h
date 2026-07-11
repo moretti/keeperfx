@@ -298,6 +298,11 @@ void initialise_wallhugging_path_from_to(struct Navigation *navi, struct Coord3d
 long ariadne_oracle_route_fwd_bak(long start_x, long start_y, long end_x, long end_y,
     unsigned char nav_size, long lava_capable, long owner,
     int32_t *out_fwd, int32_t *out_bak, long *out_fwd_len, long *out_bak_len);
+// keeper-rx pathfinding oracle (L2b): the funnel output for one query — the full path (route_to_path +
+// path_out_a_bit) from which the Ariadne 10-waypoint window is filled. Returns path.waypoints_num.
+long ariadne_oracle_funnel(long start_x, long start_y, long end_x, long end_y,
+    unsigned char nav_size, long lava_capable, long owner,
+    int32_t *out_wp_x, int32_t *out_wp_y, long buf_cap);
 #endif
 
 /******************************************************************************/

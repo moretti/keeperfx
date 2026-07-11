@@ -1917,6 +1917,34 @@ long ariadne_oracle_route_fwd_bak(long start_x, long start_y, long end_x, long e
     tree_Bx8 = tx; tree_By8 = ty;
     return 1;
 }
+
+/*
+ * keeper-rx pathfinding oracle (L2b): the funnel/string-pull output for one query — the full path that
+ * path_init8_wide produces (ma_triangle_route's fwd/bak keep-shorter, then route_to_path + path_out_a_bit).
+ * This is the path whose first ARID_WAYPOINTS_COUNT entries ariadne_prepare_creature_route_to_target copies
+ * into the Ariadne 10-waypoint window. Sets the per-creature search globals exactly as prepare does, then
+ * copies up to buf_cap waypoint (x,y) pairs (in <<8 coords) into out_wp_x/out_wp_y.
+ * Return: path.waypoints_num (0 = no route; either disconnected regions or no passable route).
+ */
+long ariadne_oracle_funnel(long start_x, long start_y, long end_x, long end_y,
+    unsigned char nav_size, long lava_capable, long owner,
+    int32_t *out_wp_x, int32_t *out_wp_y, long buf_cap)
+{
+    struct Path path;
+    memset(&path, 0, sizeof(struct Path));
+    nav_thing_can_travel_over_lava = lava_capable;
+    owner_player_navigating = owner;
+    path_init8_wide_f(&path, start_x, start_y, end_x, end_y, -2, nav_size, __func__);
+    nav_thing_can_travel_over_lava = 0;
+    owner_player_navigating = -1;
+    long n = path.waypoints_num;
+    for (long i = 0; (i < n) && (i < buf_cap); i++)
+    {
+        out_wp_x[i] = path.waypoints[i].x;
+        out_wp_y[i] = path.waypoints[i].y;
+    }
+    return n;
+}
 #endif
 
 void edgelen_init(void)

@@ -38,6 +38,7 @@ FTestActionResult ftest_ariadne_oracle_action__dump_navcolour(struct FTestAction
 FTestActionResult ftest_ariadne_oracle_action__dump_mesh(struct FTestActionArgs* const args);
 FTestActionResult ftest_ariadne_oracle_action__dump_regions(struct FTestActionArgs* const args);
 FTestActionResult ftest_ariadne_oracle_action__dump_route(struct FTestActionArgs* const args);
+FTestActionResult ftest_ariadne_oracle_action__dump_waypoints(struct FTestActionArgs* const args);
 
 TbBool ftest_ariadne_oracle_init()
 {
@@ -50,6 +51,7 @@ TbBool ftest_ariadne_oracle_init()
     ftest_append_action(ftest_ariadne_oracle_action__dump_mesh, 0, NULL);
     ftest_append_action(ftest_ariadne_oracle_action__dump_regions, 0, NULL);
     ftest_append_action(ftest_ariadne_oracle_action__dump_route, 0, NULL);
+    ftest_append_action(ftest_ariadne_oracle_action__dump_waypoints, 0, NULL);
     return true;
 }
 
@@ -263,6 +265,11 @@ static const struct AriadneOracleQuery ariadne_oracle_queries_9000[] = {
 static const struct AriadneOracleQuery ariadne_oracle_queries_9001[] = {
     { 61, 127, 193, 127, 0, 0, -1 },
     { 127, 61, 127, 193, 0, 0, -1 },
+    // A route whose destination is INSIDE the central rock block (subtile 127,127) — unreachable: the
+    // regions gate rejects it (a wall triangle is disconnected from every floor component). keeper-rx's
+    // FindRoute must return null here (Step 7 reachability), so both D2 (status 0) and D2b (0 waypoints)
+    // capture the disconnected branch, distinct from M2's connected-but-no-passable-route imp-vs-lava case.
+    { 61, 127, 127, 127, 0, 0, -1 },
 };
 static const struct AriadneOracleQuery ariadne_oracle_queries_9002[] = {
     { 61, 61, 61, 193, 0, 0, -1 },
@@ -348,6 +355,76 @@ FTestActionResult ftest_ariadne_oracle_action__dump_route(struct FTestActionArgs
 
     fclose(f);
     FTESTLOG("ariadne oracle: dumped %u route quer%s for level %ld -> %s", qcount, qcount == 1 ? "y" : "ies", level, path);
+    return FTRs_Go_To_Next_Action;
+}
+
+// D2b — the funnel/string-pull waypoints (route_to_path + path_out_a_bit), for the SAME query set as the
+// D2 route dump. This is the path whose first ARID_WAYPOINTS_COUNT entries feed the Ariadne 10-waypoint
+// window; keeper-rx's L2b gate diffs the whole waypoint list by exact integer coordinate (the coords are
+// geometric — derived from the bit-exact mesh — so no numbering leaks). One binary per level:
+//   magic "KFXNAVW\0" (8) | version u16 | level u16 | query_count u32
+//   then query_count records, each:
+//     start_x i32 | start_y i32 | end_x i32 | end_y i32   (the <<8 coords the funnel used)
+//     nav_size u8 | lava u8 | owner i8 | pad u8
+//     waypoints_num i32   (>= 0; 0 = no route — disconnected regions or no passable route)
+//     waypoints_num * (x i32, y i32)   (the funnel waypoints, in <<8 coords)
+static int32_t ariadne_oracle_wp_x[ARID_PATH_WAYPOINTS_COUNT];
+static int32_t ariadne_oracle_wp_y[ARID_PATH_WAYPOINTS_COUNT];
+
+FTestActionResult ftest_ariadne_oracle_action__dump_waypoints(struct FTestActionArgs* const args)
+{
+    (void)args;
+    const long level = (long)get_loaded_level_number();
+
+    unsigned int qcount = 0;
+    const struct AriadneOracleQuery* queries = ariadne_oracle_queries_for(level, &qcount);
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/oracle_ariadne_waypoints_%05ld.bin", ariadne_out_dir(), level);
+    FILE* f = fopen(path, "wb");
+    if (f == NULL)
+    {
+        FTEST_FRAMEWORK_ABORT("ariadne oracle: failed to open '%s'", path);
+        return FTRs_Go_To_Next_Action;
+    }
+
+    fwrite("KFXNAVW\0", 1, 8, f);
+    fput_u16_le(f, ARIADNE_ORACLE_VERSION);
+    fput_u16_le(f, (unsigned int)(level & 0xFFFF));
+    fput_u32_le(f, qcount);
+
+    for (unsigned int q = 0; q < qcount; q++)
+    {
+        const struct AriadneOracleQuery* qq = &queries[q];
+        const long sx = ARIADNE_ORACLE_STL_CENTRE(qq->start_stl_x);
+        const long sy = ARIADNE_ORACLE_STL_CENTRE(qq->start_stl_y);
+        const long ex = ARIADNE_ORACLE_STL_CENTRE(qq->end_stl_x);
+        const long ey = ARIADNE_ORACLE_STL_CENTRE(qq->end_stl_y);
+        long n = ariadne_oracle_funnel(sx, sy, ex, ey, qq->nav_size, qq->lava, qq->owner,
+            ariadne_oracle_wp_x, ariadne_oracle_wp_y, ARID_PATH_WAYPOINTS_COUNT);
+        if (n < 0)
+            n = 0;
+
+        fput_u32_le(f, (unsigned int)sx);
+        fput_u32_le(f, (unsigned int)sy);
+        fput_u32_le(f, (unsigned int)ex);
+        fput_u32_le(f, (unsigned int)ey);
+        fputc((int)qq->nav_size, f);
+        fputc((int)qq->lava, f);
+        fputc((int)(unsigned char)qq->owner, f);
+        fputc(0, f); // pad
+        fput_u32_le(f, (unsigned int)n);
+        for (long i = 0; i < n; i++)
+        {
+            fput_u32_le(f, (unsigned int)ariadne_oracle_wp_x[i]);
+            fput_u32_le(f, (unsigned int)ariadne_oracle_wp_y[i]);
+        }
+
+        FTESTLOG("ariadne oracle: waypoints q%u lvl %ld waypoints_num=%ld", q, level, n);
+    }
+
+    fclose(f);
+    FTESTLOG("ariadne oracle: dumped %u waypoint quer%s for level %ld -> %s", qcount, qcount == 1 ? "y" : "ies", level, path);
     return FTRs_Go_To_Next_Action;
 }
 
