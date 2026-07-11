@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "../ftest.h"
+#include "../ftest_util.h"
 
 #include "../../keeperfx.hpp"
 #include "../../game_legacy.h"
@@ -23,6 +24,12 @@
 #include "../../thing_list.h"
 #include "../../thing_physics.h"
 #include "../../thing_creature.h"
+#include "../../thing_navigate.h"
+#include "../../creature_control.h"
+#include "../../creature_states.h"
+#include "../../config_creature.h"
+#include "../../player_instances.h"
+#include "../../map_data.h"
 #include "../../ver_defs.h"
 
 // Defined (non-static) in ariadne.c but not declared in ariadne.h — the OnLine follower's block test.
@@ -49,6 +56,7 @@ FTestActionResult ftest_ariadne_oracle_action__dump_regions(struct FTestActionAr
 FTestActionResult ftest_ariadne_oracle_action__dump_route(struct FTestActionArgs* const args);
 FTestActionResult ftest_ariadne_oracle_action__dump_waypoints(struct FTestActionArgs* const args);
 FTestActionResult ftest_ariadne_oracle_action__dump_collision(struct FTestActionArgs* const args);
+FTestActionResult ftest_ariadne_oracle_action__dump_follow(struct FTestActionArgs* const args);
 
 TbBool ftest_ariadne_oracle_init()
 {
@@ -63,6 +71,10 @@ TbBool ftest_ariadne_oracle_init()
     ftest_append_action(ftest_ariadne_oracle_action__dump_route, 0, NULL);
     ftest_append_action(ftest_ariadne_oracle_action__dump_waypoints, 0, NULL);
     ftest_append_action(ftest_ariadne_oracle_action__dump_collision, 0, NULL);
+    // The per-tick route follow (D3) runs last: it spawns a real imp and drives the live creature-state
+    // machine over several ticks, mutating game state (creatures, nav scratch). Every earlier dump reads the
+    // pristine post-load mesh/collision, so keep the follow after them.
+    ftest_append_action(ftest_ariadne_oracle_action__dump_follow, 0, NULL);
     return true;
 }
 
@@ -539,6 +551,158 @@ FTestActionResult ftest_ariadne_oracle_action__dump_collision(struct FTestAction
     fclose(f);
     FTESTLOG("ariadne oracle: dumped %ux%u collision map for level %ld -> %s", n, n, level, path);
     return FTRs_Go_To_Next_Action;
+}
+
+// D3 — the per-tick route follower (keeper-rx Step 8b). A real imp is spawned at the level's first
+// route-query start, ordered to move to that query's end via the live creature-state machine
+// (setup_person_move_to_position -> CrSt_MoveToPosition), and its state is dumped once per game tick as the
+// follower walks it there. This is the ground truth for the per-tick position parity contract: keeper-rx
+// seeds record 0 and replays its ported follower, diffing mappos + mode + waypoint each tick. One binary per
+// level (streaming — no up-front tick count; the reader consumes fixed records to EOF):
+//   header (22 bytes): magic "KFXNAVF\0" (8) | version u16 | level u16 |
+//                      start_stl_x u16 | start_stl_y u16 | end_stl_x u16 | end_stl_y u16 | record_size u16
+//   then N records (22 bytes each), one per tick:
+//     tick u16 | pos_x i32 | pos_y i32   (thing->mappos.x/y.val)
+//     mode u8 (arid.update_state: 0 Unset / 1 OnLine / 2 Wallhug / 3 Manoeuvre) |
+//     current_waypoint u8 | stored_waypoints u8 | total_waypoints u8 (low byte) |
+//     waypoint_x i32 | waypoint_y i32   (arid.waypoints[current_waypoint], or 0 if out of range)
+// Record 0 is the posed initial state (imp at start, mode Unset — the follower has not run yet); records
+// 1..N-1 are after each follow step. A level whose first query is unreachable by a plain (non-lava) imp
+// (e.g. M2's lava strip fully separates the map) writes a header with zero records.
+#define ARIADNE_FOLLOW_RECORD_SIZE 22u
+// Safety cap so a mis-authored route that never arrives cannot spin the ftest forever. The clear fixtures
+// arrive in well under this many ticks (a full 255-subtile diagonal at the imp's base speed of 96
+// coord-units/tick is ~680 ticks).
+#define ARIADNE_FOLLOW_MAX_TICKS 4000
+
+// Dedicated per-tick follow routes (D3): short routes reachable by a plain (non-lava) imp and chosen to
+// stay OnLine — no wallhug/manoeuvre — for the first follower gate. The corridor/tight-corner routes that
+// trigger the fallback modes are the Step 9/10 fixtures, not this one. Subtile coords; the actual mode each
+// tick is captured in the dump and verified numerically (never assumed).
+struct AriadneFollowRoute { int start_stl_x, start_stl_y, end_stl_x, end_stl_y; TbBool present; };
+
+static struct AriadneFollowRoute ariadne_follow_route_for(long level)
+{
+    struct AriadneFollowRoute r;
+    r.present = true;
+    switch (level)
+    {
+    case 9000: r.start_stl_x = 40;  r.start_stl_y = 40;  r.end_stl_x = 56;  r.end_stl_y = 56;  break; // open floor, straight
+    case 9001: r.start_stl_x = 120; r.start_stl_y = 127; r.end_stl_x = 135; r.end_stl_y = 127; break; // bends around the central wall
+    case 9002: r.start_stl_x = 30;  r.start_stl_y = 20;  r.end_stl_x = 60;  r.end_stl_y = 40;  break; // top half, clear of the lava strip
+    case 9003: r.start_stl_x = 6;   r.start_stl_y = 127; r.end_stl_x = 18;  r.end_stl_y = 127; break; // inside the left room
+    default:   r.present = false; r.start_stl_x = r.start_stl_y = r.end_stl_x = r.end_stl_y = 0; break;
+    }
+    return r;
+}
+
+static FILE* ariadne_follow_file = NULL;
+static struct Thing* ariadne_follow_imp = NULL;
+
+static void ariadne_follow_dump_record(FILE* f, long tick, struct Thing* imp)
+{
+    struct CreatureControl* cctrl = creature_control_get_from_thing(imp);
+    const struct Ariadne* arid = &cctrl->arid;
+    unsigned char cwp = arid->current_waypoint;
+    long wx = 0, wy = 0;
+    if (cwp < arid->stored_waypoints)
+    {
+        wx = arid->waypoints[cwp].x.val;
+        wy = arid->waypoints[cwp].y.val;
+    }
+    fput_u16_le(f, (unsigned int)tick);
+    fput_u32_le(f, (unsigned int)imp->mappos.x.val);
+    fput_u32_le(f, (unsigned int)imp->mappos.y.val);
+    fputc((int)arid->update_state, f);
+    fputc((int)arid->current_waypoint, f);
+    fputc((int)arid->stored_waypoints, f);
+    fputc((int)(arid->total_waypoints & 0xFF), f);
+    fput_u32_le(f, (unsigned int)wx);
+    fput_u32_le(f, (unsigned int)wy);
+}
+
+FTestActionResult ftest_ariadne_oracle_action__dump_follow(struct FTestActionArgs* const args)
+{
+    const long level = (long)get_loaded_level_number();
+    const struct AriadneFollowRoute route = ariadne_follow_route_for(level);
+
+    if (args->times_executed == 0)
+    {
+        char path[512];
+        snprintf(path, sizeof(path), "%s/oracle_ariadne_follow_%05ld.bin", ariadne_out_dir(), level);
+        ariadne_follow_file = fopen(path, "wb");
+        if (ariadne_follow_file == NULL)
+        {
+            FTEST_FRAMEWORK_ABORT("ariadne oracle: failed to open '%s'", path);
+            return FTRs_Go_To_Next_Action;
+        }
+
+        const int start_stl_x = route.start_stl_x;
+        const int start_stl_y = route.start_stl_y;
+        const int end_stl_x   = route.end_stl_x;
+        const int end_stl_y   = route.end_stl_y;
+
+        fwrite("KFXNAVF\0", 1, 8, ariadne_follow_file);
+        fput_u16_le(ariadne_follow_file, ARIADNE_ORACLE_VERSION);
+        fput_u16_le(ariadne_follow_file, (unsigned int)(level & 0xFFFF));
+        fput_u16_le(ariadne_follow_file, (unsigned int)start_stl_x);
+        fput_u16_le(ariadne_follow_file, (unsigned int)start_stl_y);
+        fput_u16_le(ariadne_follow_file, (unsigned int)end_stl_x);
+        fput_u16_le(ariadne_follow_file, (unsigned int)end_stl_y);
+        fput_u16_le(ariadne_follow_file, ARIADNE_FOLLOW_RECORD_SIZE);
+
+        if (!route.present)
+        {
+            fclose(ariadne_follow_file);
+            ariadne_follow_file = NULL;
+            FTESTLOG("ariadne oracle: no follow route for level %ld, follow dump is empty", level);
+            return FTRs_Go_To_Next_Action;
+        }
+
+        const MapCoord sx = subtile_coord_center(start_stl_x);
+        const MapCoord sy = subtile_coord_center(start_stl_y);
+        ariadne_follow_imp = ftest_util_create_creature(sx, sy, PLAYER0, 1, get_players_special_digger_model(PLAYER0));
+        if (thing_is_invalid(ariadne_follow_imp))
+        {
+            FTEST_FAIL_TEST("ariadne oracle: could not spawn the imp for the follow dump (level %ld)", level);
+            fclose(ariadne_follow_file);
+            ariadne_follow_file = NULL;
+            return FTRs_Go_To_Next_Action;
+        }
+        // Settle the imp onto the floor under its spawn tile before ordering the move (mirrors the movement
+        // oracle: create_creature places it, move_thing_in_map fixes floor_height/z for that subtile).
+        move_thing_in_map(ariadne_follow_imp, &ariadne_follow_imp->mappos);
+
+        if (!setup_person_move_to_position(ariadne_follow_imp, end_stl_x, end_stl_y, NavRtF_Default))
+        {
+            // Unreachable for a plain imp (e.g. M2's full-width lava strip). Header stays with zero records.
+            FTESTLOG("ariadne oracle: route (%d,%d)->(%d,%d) unreachable for a plain imp on level %ld; empty follow dump",
+                start_stl_x, start_stl_y, end_stl_x, end_stl_y, level);
+            fclose(ariadne_follow_file);
+            ariadne_follow_file = NULL;
+            delete_thing_structure(ariadne_follow_imp, 0);
+            ariadne_follow_imp = NULL;
+            return FTRs_Go_To_Next_Action;
+        }
+
+        ariadne_follow_dump_record(ariadne_follow_file, args->times_executed, ariadne_follow_imp);
+        return FTRs_Repeat_Current_Action;
+    }
+
+    ariadne_follow_dump_record(ariadne_follow_file, args->times_executed, ariadne_follow_imp);
+
+    // Stop once the imp leaves MoveToPosition (arrived, or continue_state popped it) or the safety cap trips.
+    if (ariadne_follow_imp->active_state != CrSt_MoveToPosition || args->times_executed >= ARIADNE_FOLLOW_MAX_TICKS)
+    {
+        FTESTLOG("ariadne oracle: follow dump for level %ld complete (%ld records, final state %d)",
+            level, (long)args->times_executed + 1, (int)ariadne_follow_imp->active_state);
+        fclose(ariadne_follow_file);
+        ariadne_follow_file = NULL;
+        delete_thing_structure(ariadne_follow_imp, 0);
+        ariadne_follow_imp = NULL;
+        return FTRs_Go_To_Next_Action;
+    }
+    return FTRs_Repeat_Current_Action;
 }
 
 #ifdef __cplusplus
