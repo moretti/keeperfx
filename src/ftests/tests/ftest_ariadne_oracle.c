@@ -25,6 +25,7 @@
 #include "../../thing_physics.h"
 #include "../../thing_creature.h"
 #include "../../thing_navigate.h"
+#include "../../map_blocks.h"
 #include "../../creature_control.h"
 #include "../../creature_states.h"
 #include "../../config_creature.h"
@@ -34,6 +35,10 @@
 
 // Defined (non-static) in ariadne.c but not declared in ariadne.h — the OnLine follower's block test.
 long ariadne_creature_blocked_by_wall_at(struct Thing *thing, const struct Coord3d *pos);
+
+// Defined (non-static) in map_blocks.c but not declared in map_blocks.h — the faithful "dig a slab out"
+// mutation (WLB -> path/liquid, neutral, then update_navigation_triangulation). Used by the D1-after-dig dump.
+void replace_map_slab_when_destroyed(MapSlabCoord slb_x, MapSlabCoord slb_y);
 
 #include "../../post_inc.h"
 
@@ -58,6 +63,8 @@ FTestActionResult ftest_ariadne_oracle_action__dump_waypoints(struct FTestAction
 FTestActionResult ftest_ariadne_oracle_action__dump_collision(struct FTestActionArgs* const args);
 FTestActionResult ftest_ariadne_oracle_action__dump_follow(struct FTestActionArgs* const args);
 FTestActionResult ftest_ariadne_oracle_action__dump_follow_fallback(struct FTestActionArgs* const args);
+FTestActionResult ftest_ariadne_oracle_action__dump_mesh_postdig(struct FTestActionArgs* const args);
+FTestActionResult ftest_ariadne_oracle_action__dump_follow_middig(struct FTestActionArgs* const args);
 
 TbBool ftest_ariadne_oracle_init()
 {
@@ -79,6 +86,12 @@ TbBool ftest_ariadne_oracle_init()
     // D3-fallback — the wall-hug / manoeuvre route (Step 9). Spawns its own imp after the OnLine follow's
     // imp is deleted, so it too starts from the pristine post-load mesh.
     ftest_append_action(ftest_ariadne_oracle_action__dump_follow_fallback, 0, NULL);
+    // D1-after-dig (keeper-rx Step 11) MUST run after every pristine dump: it digs a slab, which mutates the
+    // shared mesh via update_navigation_triangulation. (No-op on levels without a dig tile.)
+    ftest_append_action(ftest_ariadne_oracle_action__dump_mesh_postdig, 0, NULL);
+    // D3-mid-dig (keeper-rx Step 11) runs last of all: it drives a fresh imp and digs mid-route, mutating the
+    // mesh again. Its own spawn starts from the post-load mesh on 9004 (untouched by the 9003-only post-dig).
+    ftest_append_action(ftest_ariadne_oracle_action__dump_follow_middig, 0, NULL);
     return true;
 }
 
@@ -151,33 +164,20 @@ FTestActionResult ftest_ariadne_oracle_action__dump_navcolour(struct FTestAction
 // tri_count is ix_Triangles (the high-water mark); a slot is "used" iff tree_alt != NAV_COL_UNSET, and
 // only used triangles are compared. The neighbour ids index this same array so the reader can resolve
 // each tag to the neighbour's coords without trusting the id value itself.
-FTestActionResult ftest_ariadne_oracle_action__dump_mesh(struct FTestActionArgs* const args)
+// Shared writer for the D1 mesh dump (header + tri_count records). Reused by the pristine post-load dump
+// and the post-dig dump (keeper-rx Step 11), so both share one byte layout.
+static void ariadne_write_mesh(FILE* f, long level)
 {
-    (void)args;
-    const long level = (long)get_loaded_level_number();
-
-    char path[512];
-    snprintf(path, sizeof(path), "%s/oracle_ariadne_mesh_%05ld.bin", ariadne_out_dir(), level);
-    FILE* f = fopen(path, "wb");
-    if (f == NULL)
-    {
-        FTEST_FRAMEWORK_ABORT("ariadne oracle: failed to open '%s'", path);
-        return FTRs_Go_To_Next_Action;
-    }
-
     const unsigned int tri_count = (unsigned int)ix_Triangles;
     fwrite("KFXNAVM\0", 1, 8, f);
     fput_u16_le(f, ARIADNE_ORACLE_VERSION);
     fput_u16_le(f, (unsigned int)(level & 0xFFFF));
     fput_u32_le(f, tri_count);
 
-    unsigned int used = 0;
     for (unsigned int i = 0; i < tri_count; i++)
     {
         const struct Triangle* tri = &Triangles[i];
         const int is_used = (tri->tree_alt != NAV_COL_UNSET);
-        if (is_used)
-            used++;
         fput_u16_le(f, (unsigned int)tri->tree_alt);
         fputc((int)(tri->navigation_flags & 0xFF), f);
         fput_u16_le(f, (unsigned int)tri->region_and_edgelen);
@@ -195,9 +195,24 @@ FTestActionResult ftest_ariadne_oracle_action__dump_mesh(struct FTestActionArgs*
         for (int c = 0; c < 3; c++)
             fput_u32_le(f, (unsigned int)tri->tags[c]);
     }
+}
 
+FTestActionResult ftest_ariadne_oracle_action__dump_mesh(struct FTestActionArgs* const args)
+{
+    (void)args;
+    const long level = (long)get_loaded_level_number();
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/oracle_ariadne_mesh_%05ld.bin", ariadne_out_dir(), level);
+    FILE* f = fopen(path, "wb");
+    if (f == NULL)
+    {
+        FTEST_FRAMEWORK_ABORT("ariadne oracle: failed to open '%s'", path);
+        return FTRs_Go_To_Next_Action;
+    }
+    ariadne_write_mesh(f, level);
     fclose(f);
-    FTESTLOG("ariadne oracle: dumped mesh (%u/%u triangles used) for level %ld -> %s", used, tri_count, level, path);
+    FTESTLOG("ariadne oracle: dumped mesh (%u triangles) for level %ld -> %s", (unsigned int)ix_Triangles, level, path);
     return FTRs_Go_To_Next_Action;
 }
 
@@ -306,6 +321,11 @@ static const struct AriadneOracleQuery ariadne_oracle_queries_9003[] = {
     { 16, 127, 241, 127, 0, 0, -1 },
     { 16, 127, 241, 127, 0, 1, -1 },
 };
+// M-maze: the serpentine end-to-end route (top-left corridor corner to the bottom corridor's far end).
+// It funnels to >10 waypoints, so it drives the Ariadne 10-window per-chunk re-search (keeper-rx Step 10).
+static const struct AriadneOracleQuery ariadne_oracle_queries_9004[] = {
+    { 10, 10, 10, 64, 0, 0, -1 },
+};
 
 static const struct AriadneOracleQuery* ariadne_oracle_queries_for(long level, unsigned int* count)
 {
@@ -315,6 +335,7 @@ static const struct AriadneOracleQuery* ariadne_oracle_queries_for(long level, u
     case 9001: *count = sizeof(ariadne_oracle_queries_9001)/sizeof(ariadne_oracle_queries_9001[0]); return ariadne_oracle_queries_9001;
     case 9002: *count = sizeof(ariadne_oracle_queries_9002)/sizeof(ariadne_oracle_queries_9002[0]); return ariadne_oracle_queries_9002;
     case 9003: *count = sizeof(ariadne_oracle_queries_9003)/sizeof(ariadne_oracle_queries_9003[0]); return ariadne_oracle_queries_9003;
+    case 9004: *count = sizeof(ariadne_oracle_queries_9004)/sizeof(ariadne_oracle_queries_9004[0]); return ariadne_oracle_queries_9004;
     default: *count = 0; return NULL;
     }
 }
@@ -595,6 +616,10 @@ static struct AriadneFollowRoute ariadne_follow_route_for(long level)
     case 9001: r.start_stl_x = 120; r.start_stl_y = 127; r.end_stl_x = 135; r.end_stl_y = 127; break; // bends around the central wall
     case 9002: r.start_stl_x = 30;  r.start_stl_y = 20;  r.end_stl_x = 60;  r.end_stl_y = 40;  break; // top half, clear of the lava strip
     case 9003: r.start_stl_x = 6;   r.start_stl_y = 127; r.end_stl_x = 18;  r.end_stl_y = 127; break; // inside the left room
+    // M-maze: the whole serpentine, top-left corridor corner to the bottom corridor's far end. It funnels
+    // to >10 waypoints, so the follower walks the 10-window empty and re-searches a fresh chunk from the
+    // imp's drifted position (keeper-rx Step 10; ariadne_creature_get_next_waypoint, ariadne.c#L2738-L2747).
+    case 9004: r.start_stl_x = 10;  r.start_stl_y = 10;  r.end_stl_x = 10;  r.end_stl_y = 64;  break;
     default:   r.present = false; r.start_stl_x = r.start_stl_y = r.end_stl_x = r.end_stl_y = 0; break;
     }
     return r;
@@ -618,6 +643,26 @@ static struct AriadneFollowRoute ariadne_follow_fallback_route_for(long level)
     default:   r.present = false; r.start_stl_x = r.start_stl_y = r.end_stl_x = r.end_stl_y = 0; break;
     }
     return r;
+}
+
+// An optional mid-route dig (keeper-rx Step 11): after the record for tick `tick` is dumped (and before the
+// game tick that produces the next record), dig slab (slb_x,slb_y) out via replace_map_slab_when_destroyed,
+// synchronously retriangulating the mesh. Chosen to OPEN a shortcut on the M-maze route so the imp's next
+// window re-search re-routes over the patched mesh — the "imp mid-route when a tile is dug" scenario.
+struct AriadneMidDig { int slb_x, slb_y; long tick; TbBool present; };
+static struct AriadneMidDig ariadne_middig_for(long level)
+{
+    struct AriadneMidDig d;
+    d.present = true;
+    switch (level)
+    {
+    // A left-side wall between two corridors of the serpentine: digging it opens a left connector, so a
+    // re-search from the imp's drifted position takes a shorter path down the left instead of serpentining.
+    // Tick 50 is well before the first window-exhaust re-chunk, so the shortcut is live when it re-searches.
+    case 9004: d.slb_x = 3; d.slb_y = 16; d.tick = 50; break;
+    default:   d.present = false; d.slb_x = d.slb_y = 0; d.tick = -1; break;
+    }
+    return d;
 }
 
 static FILE* ariadne_follow_file = NULL;
@@ -648,7 +693,7 @@ static void ariadne_follow_dump_record(FILE* f, long tick, struct Thing* imp)
 // Shared body for the two follow dumps: spawn a real imp at the route start, order it to the end via the
 // live creature-state machine, and stream one KFXNAVF record per game tick until it arrives. `suffix`
 // distinguishes the OnLine baseline dump ("") from the fallback-mode dump ("_fallback").
-static FTestActionResult ariadne_follow_run(struct FTestActionArgs* const args, struct AriadneFollowRoute route, const char* suffix)
+static FTestActionResult ariadne_follow_run(struct FTestActionArgs* const args, struct AriadneFollowRoute route, const char* suffix, struct AriadneMidDig dig)
 {
     const long level = (long)get_loaded_level_number();
 
@@ -717,6 +762,14 @@ static FTestActionResult ariadne_follow_run(struct FTestActionArgs* const args, 
 
     ariadne_follow_dump_record(ariadne_follow_file, args->times_executed, ariadne_follow_imp);
 
+    // Mid-route dig (keeper-rx Step 11): after this tick's (pre-dig) record, mutate the terrain so the next
+    // game tick — and any window re-search inside it — sees the patched mesh.
+    if (dig.present && (long)args->times_executed == dig.tick)
+    {
+        replace_map_slab_when_destroyed(dig.slb_x, dig.slb_y);
+        FTESTLOG("ariadne oracle: mid-route dig at slab (%d,%d) on tick %ld (level %ld)", dig.slb_x, dig.slb_y, dig.tick, level);
+    }
+
     // Stop once the imp leaves MoveToPosition (arrived, or continue_state popped it) or the safety cap trips.
     if (ariadne_follow_imp->active_state != CrSt_MoveToPosition || args->times_executed >= ARIADNE_FOLLOW_MAX_TICKS)
     {
@@ -731,17 +784,90 @@ static FTestActionResult ariadne_follow_run(struct FTestActionArgs* const args, 
     return FTRs_Repeat_Current_Action;
 }
 
+static struct AriadneMidDig ariadne_no_dig(void)
+{
+    struct AriadneMidDig d;
+    d.present = false; d.slb_x = d.slb_y = 0; d.tick = -1;
+    return d;
+}
+
 // D3 — the OnLine baseline follow (one clear route per fixture).
 FTestActionResult ftest_ariadne_oracle_action__dump_follow(struct FTestActionArgs* const args)
 {
-    return ariadne_follow_run(args, ariadne_follow_route_for((long)get_loaded_level_number()), "");
+    return ariadne_follow_run(args, ariadne_follow_route_for((long)get_loaded_level_number()), "", ariadne_no_dig());
 }
 
 // D3-fallback — the wall-hug / manoeuvre follow (a diagonal squeeze past a convex corner). Only 9003 has
 // the geometry; the others write an empty (header-only) dump.
 FTestActionResult ftest_ariadne_oracle_action__dump_follow_fallback(struct FTestActionArgs* const args)
 {
-    return ariadne_follow_run(args, ariadne_follow_fallback_route_for((long)get_loaded_level_number()), "_fallback");
+    return ariadne_follow_run(args, ariadne_follow_fallback_route_for((long)get_loaded_level_number()), "_fallback", ariadne_no_dig());
+}
+
+// D3-mid-dig — the follow with a mid-route dig (keeper-rx Step 11): the same M-maze long route as D3, but a
+// wall is dug partway through, opening a shortcut a window re-search then takes. Only 9004 has the scenario;
+// the others emit no dump at all.
+FTestActionResult ftest_ariadne_oracle_action__dump_follow_middig(struct FTestActionArgs* const args)
+{
+    const long level = (long)get_loaded_level_number();
+    struct AriadneMidDig dig = ariadne_middig_for(level);
+    if (!dig.present)
+    {
+        // No mid-dig scenario for this level: emit no file at all (like dump_mesh_postdig), rather than a
+        // header-only stub — keeps the committed oracle set to the levels that actually exercise the gate.
+        FTESTLOG("ariadne oracle: no mid-dig scenario for level %ld, no mid-dig follow dump", level);
+        return FTRs_Go_To_Next_Action;
+    }
+    return ariadne_follow_run(args, ariadne_follow_route_for(level), "_middig", dig);
+}
+
+// The diggable earth tile per fixture (keeper-rx Step 11). Only M-full (9003) carries one — the earth slab
+// pinching its corridor (SyntheticMaps.MFull); the others have no dig target so emit no post-dig dump.
+struct AriadneDigTile { int slb_x, slb_y; TbBool present; };
+static struct AriadneDigTile ariadne_dig_tile_for(long level)
+{
+    struct AriadneDigTile t;
+    t.present = true;
+    switch (level)
+    {
+    case 9003: t.slb_x = 21; t.slb_y = 42; break; // the earth tile in the corridor
+    default:   t.present = false; t.slb_x = t.slb_y = 0; break;
+    }
+    return t;
+}
+
+// D1-after-dig — the navigation mesh AFTER a slab is dug (keeper-rx Step 11). Digs the fixture's earth tile
+// via replace_map_slab_when_destroyed (WLB -> path, neutral owner, then update_blocks_around_slab ->
+// update_navigation_triangulation), then dumps the retriangulated mesh to oracle_ariadne_mesh_postdig_*.bin
+// (same KFXNAVM layout as D1). keeper-rx digs the same tile through TerrainMutator + NavMesh.Retriangulate
+// and diffs the two meshes by geometric identity (ADR-0021). Present only for the fixture with a dig tile.
+FTestActionResult ftest_ariadne_oracle_action__dump_mesh_postdig(struct FTestActionArgs* const args)
+{
+    (void)args;
+    const long level = (long)get_loaded_level_number();
+    struct AriadneDigTile tile = ariadne_dig_tile_for(level);
+    if (!tile.present)
+    {
+        FTESTLOG("ariadne oracle: no dig tile for level %ld, no post-dig mesh dump", level);
+        return FTRs_Go_To_Next_Action;
+    }
+
+    // Dig the earth slab out — the same mutation keeper-rx's TerrainMutator.DigOut mirrors; this
+    // synchronously retriangulates the ±1-slab box around it (src/map_blocks.c#L1830-L1848).
+    replace_map_slab_when_destroyed(tile.slb_x, tile.slb_y);
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/oracle_ariadne_mesh_postdig_%05ld.bin", ariadne_out_dir(), level);
+    FILE* f = fopen(path, "wb");
+    if (f == NULL)
+    {
+        FTEST_FRAMEWORK_ABORT("ariadne oracle: failed to open '%s'", path);
+        return FTRs_Go_To_Next_Action;
+    }
+    ariadne_write_mesh(f, level);
+    fclose(f);
+    FTESTLOG("ariadne oracle: dumped post-dig mesh (%u triangles) for level %ld -> %s", (unsigned int)ix_Triangles, level, path);
+    return FTRs_Go_To_Next_Action;
 }
 
 #ifdef __cplusplus
