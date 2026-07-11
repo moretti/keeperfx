@@ -1860,6 +1860,65 @@ long ma_triangle_route(long ttriA, long ttriB, int32_t *routecost)
     }
 }
 
+#ifdef FUNCTESTING
+/* keeper-rx pathfinding oracle (L2a, docs/design/pathfinding.md Step 5). Runs the RAW forward and
+ * backward triangle-route searches for one query and copies both routes out, BEFORE ma_triangle_route's
+ * funnel selects between them — isolating the best-first search from the string-pull. Mirrors the setup
+ * ma_triangle_route/path_init8_wide do around these two static buffers (which the ftest cannot reach):
+ * set the capability globals, locate the endpoint triangles, gate on region connectivity, set the
+ * creature-radius EdgeFit, then call triangle_route_do_fwd/bak directly into the caller's buffers. The
+ * cost origin (tree_A) is swapped between the two searches exactly as ma_triangle_route does, so the
+ * backward search's cost_to_start is measured from the destination.
+ *
+ * Return: 1 if the query ran (routes copied; a *_len of -1 means "regions connected but no passable
+ * route"), 0 if the regions gate rejected the pair (unreachable), -1 on a setup failure.
+ */
+long ariadne_oracle_route_fwd_bak(long start_x, long start_y, long end_x, long end_y,
+    unsigned char nav_size, long lava_capable, long owner,
+    int32_t *out_fwd, int32_t *out_bak, long *out_fwd_len, long *out_bak_len)
+{
+    int32_t rcost;
+    long tx;
+    long ty;
+    *out_fwd_len = -1;
+    *out_bak_len = -1;
+    nav_thing_can_travel_over_lava = lava_capable;
+    owner_player_navigating = owner;
+    tree_Ax8 = start_x;
+    tree_Ay8 = start_y;
+    tree_Bx8 = end_x;
+    tree_By8 = end_y;
+    tree_triA = triangle_findSE8(start_x, start_y);
+    tree_triB = triangle_findSE8(end_x, end_y);
+    if ((tree_triA == -1) || (tree_triB == -1))
+        return -1;
+    if (!regions_connected(tree_triA, tree_triB))
+        return 0;
+    edgelen_init();
+    {
+        int creature_radius = nav_size + 1;
+        if ((creature_radius < CreatureRadius_Small) || (creature_radius > CreatureRadius_Large))
+            return -1;
+        EdgeFit = RadiusEdgeFit[creature_radius];
+    }
+    /* Forward: search A->B, cost_to_start measured from A (start). */
+    rcost = 0;
+    *out_fwd_len = triangle_route_do_fwd(tree_triA, tree_triB, out_fwd, &rcost);
+    /* Swap the cost origin to B exactly as ma_triangle_route does before the backward search. */
+    tx = tree_Ax8; ty = tree_Ay8;
+    tree_Ax8 = tree_Bx8; tree_Ay8 = tree_By8;
+    tree_Bx8 = tx; tree_By8 = ty;
+    /* Backward: search B->A, cost_to_start now measured from B (destination). */
+    rcost = 0;
+    *out_bak_len = triangle_route_do_bak(tree_triB, tree_triA, out_bak, &rcost);
+    /* Restore. */
+    tx = tree_Ax8; ty = tree_Ay8;
+    tree_Ax8 = tree_Bx8; tree_Ay8 = tree_By8;
+    tree_Bx8 = tx; tree_By8 = ty;
+    return 1;
+}
+#endif
+
 void edgelen_init(void)
 {
     if (edgelen_initialised)

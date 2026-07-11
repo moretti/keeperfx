@@ -292,6 +292,14 @@ long thing_nav_sizexy(const struct Thing *thing);
 
 void initialise_wallhugging_path_from_to(struct Navigation *navi, struct Coord3d *mvstart, struct Coord3d *mvend);
 
+#ifdef FUNCTESTING
+// keeper-rx pathfinding oracle (L2a): raw forward+backward triangle-route search for one query, before
+// the funnel. Defined in ariadne.c; used only by ftest_ariadne_oracle. See docs/design/pathfinding.md.
+long ariadne_oracle_route_fwd_bak(long start_x, long start_y, long end_x, long end_y,
+    unsigned char nav_size, long lava_capable, long owner,
+    int32_t *out_fwd, int32_t *out_bak, long *out_fwd_len, long *out_bak_len);
+#endif
+
 /******************************************************************************/
 #ifdef __cplusplus
 }
