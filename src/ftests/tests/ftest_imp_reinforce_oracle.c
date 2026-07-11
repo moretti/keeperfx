@@ -36,7 +36,10 @@ extern "C" {
 #endif
 
 // Oracle dump format version — bump on any layout/meaning change (keeper-rx/docs/oracle/dump-format.md).
-#define IMP_REINFORCE_ORACLE_VERSION 1
+// v2 adds the shared digger-stack contents (stack[], stack_len, stack_turn) and the imp's own cursor into it
+// (cursor, last_did_job, imp_stack_turn) so the diff can see WHY an imp claims (or fails to claim) reinforce
+// work, not just the position/state outcome — the observability the stuck-imp diagnosis needs.
+#define IMP_REINFORCE_ORACLE_VERSION 2
 
 // The scenario is pinned to the M-reinforce synthetic fixture: a Player0-claimed room (slabs 2..20 x 2..20)
 // with the dungeon heart at slab (2,2) and one reinforceable EARTH wall on the east edge at slab (21,10) — the
@@ -100,19 +103,37 @@ static const char* imp_reinforce_out_dir(void)
 //   consecutive_reinforcements cctrl->digger.consecutive_reinforcements  (0..26 charging, resets on fortify)
 //   block_kind                 slb->kind              (SlbT_EARTH=2 until fortified, SlbT_WALLTORCH=5 after)
 //   block_owner                slabmap_owner(slb)     (PLAYER_NEUTRAL until fortified, PLAYER0 after)
+//   cursor                     cctrl->digger.task_stack_pos        (how far this imp has walked the stack)
+//   last_did_job               cctrl->digger.last_did_job          (SDLstJob_* — what it tries to continue)
+//   imp_stack_turn             cctrl->digger.stack_update_turn     (imp's cached rebuild turn; != dungeon's -> rewind)
+//   stack_turn                 dungeon->digger_stack_update_turn   (the turn the shared stack was last rebuilt)
+//   stack_len                  dungeon->digger_stack_length        (live entry count; slots past it are stale)
+//   stack[]                    dungeon->digger_stack[0..len)       ({stl:stl_num, task:task_type} per slot)
+// The stack entries are a coordinate + a task enum (stable identity), not DK's internal slot numbering, so the
+// keeper-rx diff compares them by (position, task) — the identity contract, never the ordinal.
 static void imp_reinforce_dump(FILE* f, struct Thing* imp)
 {
     struct CreatureControl* cctrl = creature_control_get_from_thing(imp);
+    struct Dungeon* dungeon = get_dungeon(imp->owner);
     struct SlabMap* slb = get_slabmap_block(WALL_SLB_X, WALL_SLB_Y);
     fprintf(f,
         "{\"v\":%d,\"type\":\"imp_reinforce\",\"tick\":%ld,"
         "\"pos_x\":%ld,\"pos_y\":%ld,\"active_state\":%d,"
         "\"instance_id\":%d,\"inst_turn\":%d,\"inst_action_turns\":%d,"
-        "\"consecutive_reinforcements\":%d,\"block_kind\":%d,\"block_owner\":%d}\n",
+        "\"consecutive_reinforcements\":%d,\"block_kind\":%d,\"block_owner\":%d,"
+        "\"cursor\":%d,\"last_did_job\":%d,\"imp_stack_turn\":%d,"
+        "\"stack_turn\":%ld,\"stack_len\":%ld,\"stack\":[",
         IMP_REINFORCE_ORACLE_VERSION, (long)get_gameturn(),
         (long)imp->mappos.x.val, (long)imp->mappos.y.val, (int)imp->active_state,
         (int)cctrl->instance_id, (int)cctrl->inst_turn, (int)cctrl->inst_action_turns,
-        (int)cctrl->digger.consecutive_reinforcements, (int)slb->kind, (int)slabmap_owner(slb));
+        (int)cctrl->digger.consecutive_reinforcements, (int)slb->kind, (int)slabmap_owner(slb),
+        (int)cctrl->digger.task_stack_pos, (int)cctrl->digger.last_did_job,
+        (int)cctrl->digger.stack_update_turn,
+        (long)dungeon->digger_stack_update_turn, (long)dungeon->digger_stack_length);
+    for (unsigned long i = 0; i < dungeon->digger_stack_length; i++)
+        fprintf(f, "%s{\"stl\":%ld,\"task\":%d}", i == 0 ? "" : ",",
+            (long)dungeon->digger_stack[i].stl_num, (int)dungeon->digger_stack[i].task_type);
+    fprintf(f, "]}\n");
 }
 
 // Driver: on the first turn reveal the map and spawn the imp; every turn dump; stop once the wall is fortified
