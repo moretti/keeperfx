@@ -57,6 +57,7 @@ FTestActionResult ftest_ariadne_oracle_action__dump_route(struct FTestActionArgs
 FTestActionResult ftest_ariadne_oracle_action__dump_waypoints(struct FTestActionArgs* const args);
 FTestActionResult ftest_ariadne_oracle_action__dump_collision(struct FTestActionArgs* const args);
 FTestActionResult ftest_ariadne_oracle_action__dump_follow(struct FTestActionArgs* const args);
+FTestActionResult ftest_ariadne_oracle_action__dump_follow_fallback(struct FTestActionArgs* const args);
 
 TbBool ftest_ariadne_oracle_init()
 {
@@ -75,6 +76,9 @@ TbBool ftest_ariadne_oracle_init()
     // machine over several ticks, mutating game state (creatures, nav scratch). Every earlier dump reads the
     // pristine post-load mesh/collision, so keep the follow after them.
     ftest_append_action(ftest_ariadne_oracle_action__dump_follow, 0, NULL);
+    // D3-fallback — the wall-hug / manoeuvre route (Step 9). Spawns its own imp after the OnLine follow's
+    // imp is deleted, so it too starts from the pristine post-load mesh.
+    ftest_append_action(ftest_ariadne_oracle_action__dump_follow_fallback, 0, NULL);
     return true;
 }
 
@@ -596,6 +600,26 @@ static struct AriadneFollowRoute ariadne_follow_route_for(long level)
     return r;
 }
 
+// Dedicated FALLBACK-mode routes (keeper-rx Step 9): routes chosen to force the wall-hug / manoeuvre
+// follower branches, not the OnLine happy path. On slab-granular maps every open passage is wider than the
+// imp, so the OnLine funnel clears normal detours; a fallback only fires where a diagonal step grazes a
+// convex rock corner. M-full's slab-50 nub gives exactly that — a diagonal squeeze through the one open
+// row of the pinch. Present only for the fixture that has such geometry (9003); the others emit an empty
+// dump. The mode each tick is captured and verified numerically (never assumed).
+static struct AriadneFollowRoute ariadne_follow_fallback_route_for(long level)
+{
+    struct AriadneFollowRoute r;
+    r.present = true;
+    switch (level)
+    {
+    // Diagonal from before the nub (top corridor row) to after it (bottom row): the imp must thread the
+    // single open row of the slab-50 pinch, grazing the nub's convex corners -> Wallhug + Manoeuvre.
+    case 9003: r.start_stl_x = 148; r.start_stl_y = 124; r.end_stl_x = 154; r.end_stl_y = 130; break;
+    default:   r.present = false; r.start_stl_x = r.start_stl_y = r.end_stl_x = r.end_stl_y = 0; break;
+    }
+    return r;
+}
+
 static FILE* ariadne_follow_file = NULL;
 static struct Thing* ariadne_follow_imp = NULL;
 
@@ -621,15 +645,17 @@ static void ariadne_follow_dump_record(FILE* f, long tick, struct Thing* imp)
     fput_u32_le(f, (unsigned int)wy);
 }
 
-FTestActionResult ftest_ariadne_oracle_action__dump_follow(struct FTestActionArgs* const args)
+// Shared body for the two follow dumps: spawn a real imp at the route start, order it to the end via the
+// live creature-state machine, and stream one KFXNAVF record per game tick until it arrives. `suffix`
+// distinguishes the OnLine baseline dump ("") from the fallback-mode dump ("_fallback").
+static FTestActionResult ariadne_follow_run(struct FTestActionArgs* const args, struct AriadneFollowRoute route, const char* suffix)
 {
     const long level = (long)get_loaded_level_number();
-    const struct AriadneFollowRoute route = ariadne_follow_route_for(level);
 
     if (args->times_executed == 0)
     {
         char path[512];
-        snprintf(path, sizeof(path), "%s/oracle_ariadne_follow_%05ld.bin", ariadne_out_dir(), level);
+        snprintf(path, sizeof(path), "%s/oracle_ariadne_follow%s_%05ld.bin", ariadne_out_dir(), suffix, level);
         ariadne_follow_file = fopen(path, "wb");
         if (ariadne_follow_file == NULL)
         {
@@ -703,6 +729,19 @@ FTestActionResult ftest_ariadne_oracle_action__dump_follow(struct FTestActionArg
         return FTRs_Go_To_Next_Action;
     }
     return FTRs_Repeat_Current_Action;
+}
+
+// D3 — the OnLine baseline follow (one clear route per fixture).
+FTestActionResult ftest_ariadne_oracle_action__dump_follow(struct FTestActionArgs* const args)
+{
+    return ariadne_follow_run(args, ariadne_follow_route_for((long)get_loaded_level_number()), "");
+}
+
+// D3-fallback — the wall-hug / manoeuvre follow (a diagonal squeeze past a convex corner). Only 9003 has
+// the geometry; the others write an empty (header-only) dump.
+FTestActionResult ftest_ariadne_oracle_action__dump_follow_fallback(struct FTestActionArgs* const args)
+{
+    return ariadne_follow_run(args, ariadne_follow_fallback_route_for((long)get_loaded_level_number()), "_fallback");
 }
 
 #ifdef __cplusplus
