@@ -57,6 +57,13 @@ extern "C" {
 #define HEART_TORCH_WALL_X 10
 #define HEART_TORCH_WALL_Y 7
 
+// The east pad's west-of-(17,15) claimed floor: re-claiming it re-runs place_slab_type_on_map(SlbT_CLAIMED),
+// whose FortifiedGround category promotes the plain-earth wall (17,15) — on the %5 grid facing this floor —
+// to SlbT_TORCHDIRT (an unreinforced dirt wall that carries a torch), so the torch appears on CLAIM, before
+// any reinforcement. (17,15)'s West-facing torch lands in this floor slab (16,15). map_blocks.c#L1729-L1745.
+#define CLAIM_FLOOR_X 16
+#define CLAIM_FLOOR_Y 15
+
 // Resolve the dump directory: $KEEPERFX_ORACLE_OUT, else CWD (mirrors the other oracle ftests).
 static const char* starter_dungeon_out_dir(void)
 {
@@ -187,6 +194,13 @@ FTestActionResult ftest_starter_dungeon_oracle_action__run(struct FTestActionArg
 
     // Phase "load": the designer-placed .tng torches present at map load (the heart room's four grid walls).
     starter_dungeon_census(f, "load", "designer .tng torches at map load");
+
+    // Phase "claim": re-claim the east pad floor (16,15) next to the still-plain-earth wall (17,15). The
+    // FortifiedGround neighbour re-kind promotes (17,15) EARTH->TORCHDIRT (torch_flags_for_slab != 0), and the
+    // neighbour re-bake places its torch — the torch appears on CLAIM, with no reinforcement. Runs before
+    // "reinforce" so (17,15) is still earth; reinforce later re-places it as WallTorch (same torch).
+    place_slab_type_on_map(SlbT_CLAIMED, slab_subtile_center(CLAIM_FLOOR_X), slab_subtile_center(CLAIM_FLOOR_Y), PLAYER0, 0);
+    starter_dungeon_census(f, "claim", "claimed floor (16,15); earth wall (17,15) promoted to TorchDirt, torch appears");
 
     // Phase "reinforce": wall the east room's four mid-edge earth neighbours — one fresh slab-object torch per
     // orientation (N/S/E/W), for the Flag-A per-facing world-position diff.
