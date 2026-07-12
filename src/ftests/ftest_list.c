@@ -19,6 +19,7 @@
 #include "tests/ftest_imp_handoff_oracle.h"
 #include "tests/ftest_imp_reinforce_oracle.h"
 #include "tests/ftest_starter_dungeon_oracle.h"
+#include "tests/ftest_starter_dungeon_jobs_oracle.h"
 #if !defined(__APPLE__) // the legacy ftests below reference since-changed APIs (magic.h, the rules-config
 // layout, get_slab_attrs); the macOS oracle build (keeper-rx ADR-0016) compiles only the framework +
 // oracle_spike, so they are excluded here and from macos.mk's FTEST_C_SOURCES.
@@ -71,6 +72,9 @@ struct ftest_onlyappendtests__config ftest_onlyappendtests__conf = {
          // dig them back out, dumping every torch object + its light per phase for the keeper-rx torch mesh /
          // invalidation gate (wall-torch-slab-objects.md Steps 0+7). Direct primitives -> deterministic + fast.
          { .test_name="starter_dungeon_oracle",             .init_func=ftest_starter_dungeon_oracle_init,           .level_file="classic",  .level=9008, .frame_skip=0 },
+         // Realistic imp job oracle: one isolated imp digs → hands off to claim → reinforces on the starter
+         // dungeon (9008), dumping the dig/claim/reinforce loop per turn — consolidates the retired 9005/6/7.
+         { .test_name="starter_dungeon_jobs_oracle",        .init_func=ftest_starter_dungeon_jobs_oracle_init,      .level_file="classic",  .level=9008, .frame_skip=0 },
 #if !defined(__APPLE__) // legacy ftests excluded from the macOS oracle build (see the include guard above)
          { .test_name="example_template_test",              .init_func=ftest_template_init,                         .level_file="keeporig", .level=8,  .frame_skip=8 },
          { .test_name="bug_imp_tp_attack_door__claim",      .init_func=ftest_bug_imp_tp_attack_door__claim_init,    .level_file="deepdngn", .level=80, .frame_skip=8 },
