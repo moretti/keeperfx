@@ -16,6 +16,7 @@
 #include "tests/ftest_ariadne_oracle.h"
 #include "tests/ftest_imp_dig_oracle.h"
 #include "tests/ftest_imp_convert_oracle.h"
+#include "tests/ftest_imp_mine_oracle.h"
 #include "tests/ftest_starter_dungeon_oracle.h"
 #include "tests/ftest_starter_dungeon_jobs_oracle.h"
 #include "tests/ftest_dig_shuffle_oracle.h"
@@ -71,6 +72,12 @@ struct ftest_onlyappendtests__config ftest_onlyappendtests__conf = {
          // mappos/state/instance/block-kind-owner-health/digger-stack/both-dungeons'-total_area per turn for
          // the keeper-rx convert loop to diff (imp-jobs.md Slice 2's standing coverage-gap note).
          { .test_name="imp_convert_oracle",                 .init_func=ftest_imp_convert_oracle_init,               .level_file="classic",  .level=9012, .frame_skip=0 },
+         // In-tick imp-mine-gold oracle: one imp self-assigns and mines the M-mine fixture's neutral GOLD seam
+         // (slab 21,42) to completion; dumps the imp-dig oracle's baseline fields plus gold_carried and the
+         // carry-cap overflow's dropped pile (existence/gold_stored/sprite_size/owner) per turn, through the
+         // mine-out and a short deterministic tail, for the keeper-rx mine-gold loop to diff (imp-jobs.md
+         // Slice S2).
+         { .test_name="imp_mine_oracle",                    .init_func=ftest_imp_mine_oracle_init,                  .level_file="classic",  .level=9013, .frame_skip=0 },
          // Wall-torch slab-object oracle: on the starter dungeon (9008), reinforce the east room's walls and
          // dig them back out, dumping every torch object + its light per phase for the keeper-rx torch mesh /
          // invalidation gate (wall-torch-slab-objects.md Steps 0+7). Direct primitives -> deterministic + fast.
