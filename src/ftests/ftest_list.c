@@ -24,6 +24,7 @@
 #include "tests/ftest_room_state_oracle.h"
 #include "tests/ftest_imp_haul_oracle.h"
 #include "tests/ftest_imp_arm_trap_oracle.h"
+#include "tests/ftest_imp_prison_drag_oracle.h"
 #if !defined(__APPLE__) // the legacy ftests below reference since-changed APIs (magic.h, the rules-config
 // layout, get_slab_attrs); the macOS oracle build (keeper-rx ADR-0016) compiles only the framework +
 // oracle_spike, so they are excluded here and from macos.mk's FTEST_C_SOURCES.
@@ -124,6 +125,7 @@ struct ftest_onlyappendtests__config ftest_onlyappendtests__conf = {
          // capacity, the owner's per-kind trap counters, and the shared digger stack's seam #5/#10 occupancy
          // through arm completion and a bounded settle tail (keeper-rx docs/design/imp-hauling.md Slice S6).
          { .test_name="imp_arm_trap_oracle",                .init_func=ftest_imp_arm_trap_oracle_init,              .level_file="classic",  .level=9017, .frame_skip=0 },
+         { .test_name="imp_prison_drag_oracle",             .init_func=ftest_imp_prison_drag_oracle_init,           .level_file="classic",  .level=9018, .frame_skip=0 },
 #if !defined(__APPLE__) // legacy ftests excluded from the macOS oracle build (see the include guard above)
          { .test_name="example_template_test",              .init_func=ftest_template_init,                         .level_file="keeporig", .level=8,  .frame_skip=8 },
          { .test_name="bug_imp_tp_attack_door__claim",      .init_func=ftest_bug_imp_tp_attack_door__claim_init,    .level_file="deepdngn", .level=80, .frame_skip=8 },
