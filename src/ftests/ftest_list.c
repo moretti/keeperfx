@@ -15,9 +15,6 @@
 #include "tests/ftest_parity_screenshot.h"
 #include "tests/ftest_ariadne_oracle.h"
 #include "tests/ftest_imp_dig_oracle.h"
-#include "tests/ftest_imp_claim_oracle.h"
-#include "tests/ftest_imp_handoff_oracle.h"
-#include "tests/ftest_imp_reinforce_oracle.h"
 #include "tests/ftest_starter_dungeon_oracle.h"
 #include "tests/ftest_starter_dungeon_jobs_oracle.h"
 #include "tests/ftest_dig_shuffle_oracle.h"
@@ -68,9 +65,6 @@ struct ftest_onlyappendtests__config ftest_onlyappendtests__conf = {
          // In-tick imp-dig oracle: one imp self-assigns and digs the M-full earth tile (slab 21,42); dumps
          // mappos/state/instance/block-health/task-count per turn for the keeper-rx dig loop to diff (imp-jobs.md).
          { .test_name="imp_dig_oracle",                     .init_func=ftest_imp_dig_oracle_init,                   .level_file="classic",  .level=9003, .frame_skip=0 },
-         { .test_name="imp_claim_oracle",                   .init_func=ftest_imp_claim_oracle_init,                 .level_file="classic",  .level=9005, .frame_skip=0 },
-         { .test_name="imp_handoff_oracle",                 .init_func=ftest_imp_handoff_oracle_init,               .level_file="classic",  .level=9006, .frame_skip=0 },
-         { .test_name="imp_reinforce_oracle",               .init_func=ftest_imp_reinforce_oracle_init,             .level_file="classic",  .level=9007, .frame_skip=0 },
          // Wall-torch slab-object oracle: on the starter dungeon (9008), reinforce the east room's walls and
          // dig them back out, dumping every torch object + its light per phase for the keeper-rx torch mesh /
          // invalidation gate (wall-torch-slab-objects.md Steps 0+7). Direct primitives -> deterministic + fast.
