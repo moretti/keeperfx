@@ -17,6 +17,7 @@
 #include "tests/ftest_imp_dig_oracle.h"
 #include "tests/ftest_imp_convert_oracle.h"
 #include "tests/ftest_imp_mine_oracle.h"
+#include "tests/ftest_imp_gems_oracle.h"
 #include "tests/ftest_starter_dungeon_oracle.h"
 #include "tests/ftest_starter_dungeon_jobs_oracle.h"
 #include "tests/ftest_dig_shuffle_oracle.h"
@@ -78,6 +79,14 @@ struct ftest_onlyappendtests__config ftest_onlyappendtests__conf = {
          // mine-out and a short deterministic tail, for the keeper-rx mine-gold loop to diff (imp-jobs.md
          // Slice S2).
          { .test_name="imp_mine_oracle",                    .init_func=ftest_imp_mine_oracle_init,                  .level_file="classic",  .level=9013, .frame_skip=0 },
+         // In-tick imp-mine-gems oracle: two Player0 imps (staggered creation turns, so different frozen
+         // THING_RANDOM seeds) mine the M-gems fixture's Player0-owned, indestructible GEMS seam (slab
+         // 21,42) forever, each parked by imp_digs_mines's too-much-gold-lying-around gate once its own
+         // overflow pile floods and either relocated or (a 1-in-20 roll every 5th continuation) escaped onto
+         // a random shared-stack slot; dumps both imps' mappos/state/instance/gold/digger-stack fields plus
+         // thing_index/creation_turn/random_seed per turn, for the keeper-rx mine-gems loop to diff
+         // (imp-jobs.md Slice S3).
+         { .test_name="imp_gems_oracle",                    .init_func=ftest_imp_gems_oracle_init,                  .level_file="classic",  .level=9014, .frame_skip=0 },
          // Wall-torch slab-object oracle: on the starter dungeon (9008), reinforce the east room's walls and
          // dig them back out, dumping every torch object + its light per phase for the keeper-rx torch mesh /
          // invalidation gate (wall-torch-slab-objects.md Steps 0+7). Direct primitives -> deterministic + fast.

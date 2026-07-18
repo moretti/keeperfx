@@ -82,6 +82,7 @@ ifeq ($(FTEST_DEBUG), 1)
                      src/ftests/tests/ftest_imp_dig_oracle.c \
                      src/ftests/tests/ftest_imp_convert_oracle.c \
                      src/ftests/tests/ftest_imp_mine_oracle.c \
+                     src/ftests/tests/ftest_imp_gems_oracle.c \
                      src/ftests/tests/ftest_starter_dungeon_oracle.c \
                      src/ftests/tests/ftest_starter_dungeon_jobs_oracle.c \
                      src/ftests/tests/ftest_dig_shuffle_oracle.c
