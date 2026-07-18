@@ -47,7 +47,9 @@ struct ftest_onlyappendtests__config ftest_onlyappendtests__conf = {
 
     // place regular tests in this list
     .tests_list = {
-         // Oracle-dump spike: map00302 ("Vassago", classic free-play pack), dumps heart beat + lightness for keeper-rx to diff (ADR-0016).
+         // Oracle-dump spike: dumps heart beat + lightness for keeper-rx to diff (ADR-0016). The level below is
+         // the DEFAULT only (map00302, "Vassago", classic free-play pack) — override at runtime with
+         // KEEPERFX_FTEST_LEVEL / KEEPERFX_FTEST_CAMPAIGN; the meta line records whichever level actually loaded.
          { .test_name="oracle_spike",                       .init_func=ftest_oracle_spike_init,                     .level_file="classic",  .level=302, .frame_skip=0 },
          // Movement velocity-integration oracle: a frozen imp on a claimed flat pad, dumped per turn across
          // fall/coast/walk for the keeper-rx MovementSystem to diff (keeper-rx ADR-0016, movement.md).

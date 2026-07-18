@@ -168,11 +168,14 @@ void ftest_oracle_begin(GameTurn target_tick)
     // (KEEPERFX_ORACLE_BINARY / KEEPERFX_ORACLE_BUILD); empty when run by hand. VER_STRING is the
     // compiled-in engine version. See keeper-rx/docs/oracle/dump-format.md.
     const char* prov_build  = getenv("KEEPERFX_ORACLE_BUILD");
+    // Record the level that actually loaded (not the test's built-in default), so a dump from a
+    // KEEPERFX_FTEST_LEVEL override is self-describing from its meta line alone.
+    LevelNumber loaded_level = get_loaded_level_number();
     fprintf(oracle_jsonl,
-        "{\"v\":%d,\"type\":\"meta\",\"probe\":\"heartbeat\",\"level\":302,\"campaign\":\"classic\","
+        "{\"v\":%d,\"type\":\"meta\",\"probe\":\"heartbeat\",\"level\":%ld,\"campaign\":\"classic\","
         "\"target_tick\":%ld,\"heart_flicker_disabled\":true,\"engine\":\"keeperfx-oracle-dumps\","
         "\"version\":\"%s\",\"build\":\"%s\"}\n",
-        ORACLE_DUMP_VERSION, (long)oracle_target_tick, VER_STRING,
+        ORACLE_DUMP_VERSION, (long)loaded_level, (long)oracle_target_tick, VER_STRING,
         prov_build ? prov_build : "");
 }
 
