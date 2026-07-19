@@ -89,7 +89,8 @@ ifeq ($(FTEST_DEBUG), 1)
                      src/ftests/tests/ftest_room_state_oracle.c \
                      src/ftests/tests/ftest_imp_haul_oracle.c \
                      src/ftests/tests/ftest_imp_arm_trap_oracle.c \
-                     src/ftests/tests/ftest_imp_prison_drag_oracle.c
+                     src/ftests/tests/ftest_imp_prison_drag_oracle.c \
+                     src/ftests/tests/ftest_imp_wander_variety_oracle.c
   KFX_C_OBJECTS   += $(patsubst src/%.c,obj/%.o,$(FTEST_C_SOURCES))
 endif
 

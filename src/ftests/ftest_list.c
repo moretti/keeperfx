@@ -25,6 +25,7 @@
 #include "tests/ftest_imp_haul_oracle.h"
 #include "tests/ftest_imp_arm_trap_oracle.h"
 #include "tests/ftest_imp_prison_drag_oracle.h"
+#include "tests/ftest_imp_wander_variety_oracle.h"
 #if !defined(__APPLE__) // the legacy ftests below reference since-changed APIs (magic.h, the rules-config
 // layout, get_slab_attrs); the macOS oracle build (keeper-rx ADR-0016) compiles only the framework +
 // oracle_spike, so they are excluded here and from macos.mk's FTEST_C_SOURCES.
@@ -126,6 +127,14 @@ struct ftest_onlyappendtests__config ftest_onlyappendtests__conf = {
          // through arm completion and a bounded settle tail (keeper-rx docs/design/imp-hauling.md Slice S6).
          { .test_name="imp_arm_trap_oracle",                .init_func=ftest_imp_arm_trap_oracle_init,              .level_file="classic",  .level=9017, .frame_skip=0 },
          { .test_name="imp_prison_drag_oracle",             .init_func=ftest_imp_prison_drag_oracle_init,           .level_file="classic",  .level=9018, .frame_skip=0 },
+         // In-tick idle-imp-wander-diversity oracle: on the M-wander fixture (9019: a fully Player0-claimed
+         // open floor field with a Dungeon Heart and no work of any kind anywhere), six imps at spread-out
+         // spawn slabs go idle on their first tick and, finding nothing to do, ever, all fall to
+         // creature_choose_random_destination_on_valid_adjacent_slab — each imp's own frozen (thing index,
+         // creation turn) pair gives it a different (start_stl, m) pair, so the captured golden covers many
+         // wander directions and, unlike every other oracle's single accidentally-axis-aligned leg, genuine
+         // off-axis diagonal legs too (keeper-rx docs/rx-internals/87-special-digger-jobs.md).
+         { .test_name="imp_wander_variety_oracle",          .init_func=ftest_imp_wander_variety_oracle_init,        .level_file="classic",  .level=9019, .frame_skip=0 },
 #if !defined(__APPLE__) // legacy ftests excluded from the macOS oracle build (see the include guard above)
          { .test_name="example_template_test",              .init_func=ftest_template_init,                         .level_file="keeporig", .level=8,  .frame_skip=8 },
          { .test_name="bug_imp_tp_attack_door__claim",      .init_func=ftest_bug_imp_tp_attack_door__claim_init,    .level_file="deepdngn", .level=80, .frame_skip=8 },
