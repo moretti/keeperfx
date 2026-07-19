@@ -17,9 +17,12 @@
 #include "../../light_data.h"
 #include "../../game_lghtshdw.h"
 #include "../../engine_render.h"
+#include "../../engine_camera.h"
 #include "../../engine_arrays.h"
 #include "../../config_objects.h"
+#include "../../config_settings.h"
 #include "../../thing_objects.h"
+#include "../../thing_list.h"
 #include "../../map_data.h"
 #include "../../player_instances.h"
 #include "../../bflib_mouse.h"
@@ -54,6 +57,10 @@ extern "C" {
 // calls the ftest_oracle_* functions to emit the same dump in its own launch) share one open JSONL.
 static FILE* oracle_jsonl = NULL;         // Tier A: per-turn heart-beat records + the tick-target dumps
 static GameTurn oracle_target_tick = ORACLE_TARGET_TICK;
+
+// The creature-shadow oracle's own JSONL, open only for the single armed frame (see the header). Both
+// shadow writers no-op while this is NULL, so they are harmless when left compiled into the render path.
+static FILE* oracle_shadow_jsonl = NULL;
 
 // forward declarations
 FTestActionResult ftest_oracle_spike_action001__dump(struct FTestActionArgs* const args);
@@ -275,6 +282,103 @@ void ftest_oracle_close(void)
         fclose(oracle_jsonl);
         oracle_jsonl = NULL;
     }
+}
+
+// --- Creature-shadow oracle (keeper-rx docs/design/creature-shadows.md slice 3) ---------------------
+
+void ftest_oracle_shadow_begin(void)
+{
+    oracle_shadow_jsonl = oracle_open("oracle_creature_shadow.jsonl", "w");
+    if (oracle_shadow_jsonl == NULL)
+        return;
+    // Provenance so a stray dump is reproducible from the meta line alone, mirroring ftest_oracle_begin.
+    // video_shadows is the keep-N the selection pick runs with; the keeper-rx diff feeds the same N.
+    const char* prov_build = getenv("KEEPERFX_ORACLE_BUILD");
+    LevelNumber loaded_level = get_loaded_level_number();
+    fprintf(oracle_shadow_jsonl,
+        "{\"v\":%d,\"type\":\"meta\",\"probe\":\"creature_shadow\",\"level\":%ld,\"campaign\":\"classic\","
+        "\"tick\":%ld,\"video_shadows\":%d,\"engine\":\"keeperfx-oracle-dumps\",\"version\":\"%s\","
+        "\"build\":\"%s\"}\n",
+        ORACLE_DUMP_VERSION, (long)loaded_level, (long)get_gameturn(), (int)settings.video_shadows,
+        VER_STRING, prov_build ? prov_build : "");
+}
+
+void ftest_oracle_shadow_close(void)
+{
+    if (oracle_shadow_jsonl != NULL)
+    {
+        fclose(oracle_shadow_jsonl);
+        oracle_shadow_jsonl = NULL;
+    }
+}
+
+// Emit one list's allocated lights, in the SAME walk order find_closest_lights_on_list visits them
+// (following next_in_list from list_start_idx), as [x.val,y.val] pairs. The order matters: keeper-rx's
+// NearestN front-inserts, so it must see the candidates in this exact sequence to match.
+static void shadow_dump_candidate_list(FILE* f, long list_start_idx, int* first)
+{
+    long i = list_start_idx;
+    unsigned long k = 0;
+    while (i > 0)
+    {
+        struct Light* lgt = &game.lish.lights[i];
+        i = lgt->next_in_list;
+        if ((lgt->flags & LgtF_Allocated) != 0)
+        {
+            fprintf(f, "%s[%d,%d]", *first ? "" : ",",
+                (int)lgt->mappos.x.val, (int)lgt->mappos.y.val);
+            *first = 0;
+        }
+        if (++k > LIGHTS_COUNT) // the same infinite-loop backstop the engine's own walk uses
+            break;
+    }
+}
+
+void ftest_oracle_write_shadow_selection(
+    const struct Thing* thing, const struct Coord3d* kept, int count, int n)
+{
+    if (oracle_shadow_jsonl == NULL)
+        return;
+    fprintf(oracle_shadow_jsonl,
+        "{\"v\":%d,\"type\":\"shadow_selection\",\"tick\":%ld,\"thing_idx\":%d,\"cr_x\":%d,\"cr_y\":%d,"
+        "\"n\":%d,\"count\":%d,\"candidates\":[",
+        ORACLE_DUMP_VERSION, (long)get_gameturn(), (int)thing->index,
+        (int)thing->mappos.x.val, (int)thing->mappos.y.val, n, count);
+    // The ordered candidate set NearestN processes: static lights first, then dynamic (find_closest_lights).
+    int first = 1;
+    shadow_dump_candidate_list(oracle_shadow_jsonl, game.thing_lists[TngList_StaticLights].index, &first);
+    shadow_dump_candidate_list(oracle_shadow_jsonl, game.thing_lists[TngList_DynamLights].index, &first);
+    fprintf(oracle_shadow_jsonl, "],\"kept\":[");
+    for (int j = 0; j < count; j++)
+        fprintf(oracle_shadow_jsonl, "%s[%d,%d]", j ? "," : "",
+            (int)kept[j].x.val, (int)kept[j].y.val);
+    fprintf(oracle_shadow_jsonl, "]}\n");
+}
+
+void ftest_oracle_write_shadow_geometry(
+    const struct Thing* thing, const struct Coord3d* light,
+    int sh_angle, int sprite_angle, long dist_sq,
+    int dim_ow, int dim_oh, int dim_tw, int dim_th, int animation_sprite, int current_frame,
+    int base_x, int base_z,
+    const struct EngineCoord* c1, const struct EngineCoord* c2,
+    const struct EngineCoord* c3, const struct EngineCoord* c4)
+{
+    if (oracle_shadow_jsonl == NULL)
+        return;
+    // Corner displacements = the raw FROM_FIXED offsets create_shadows adds to base before rotpers folds in
+    // the camera. keeper-rx builds these in map space: its MapX-creature.X == (cK->x - base_x) and
+    // MapY-creature.Y == -(cK->z - base_z), the map-y ↔ engine-z negation the oracle is here to pin.
+    fprintf(oracle_shadow_jsonl,
+        "{\"v\":%d,\"type\":\"shadow_geometry\",\"tick\":%ld,\"thing_idx\":%d,\"cr_x\":%d,\"cr_y\":%d,"
+        "\"move_angle\":%d,\"lgt_x\":%d,\"lgt_y\":%d,\"sh_angle\":%d,\"sprite_angle\":%d,\"dist_sq\":%ld,"
+        "\"dim_ow\":%d,\"dim_oh\":%d,\"dim_tw\":%d,\"dim_th\":%d,\"anim_sprite\":%d,\"frame\":%d,"
+        "\"d1x\":%d,\"d1z\":%d,\"d2x\":%d,\"d2z\":%d,\"d3x\":%d,\"d3z\":%d,\"d4x\":%d,\"d4z\":%d}\n",
+        ORACLE_DUMP_VERSION, (long)get_gameturn(), (int)thing->index,
+        (int)thing->mappos.x.val, (int)thing->mappos.y.val, (int)thing->move_angle_xy,
+        (int)light->x.val, (int)light->y.val, sh_angle, sprite_angle, dist_sq,
+        dim_ow, dim_oh, dim_tw, dim_th, animation_sprite, current_frame,
+        c1->x - base_x, c1->z - base_z, c2->x - base_x, c2->z - base_z,
+        c3->x - base_x, c3->z - base_z, c4->x - base_x, c4->z - base_z);
 }
 
 // --- The standalone spike: a thin wrapper over the shared dump, for MODE=oracle -----------------------

@@ -35,6 +35,42 @@ void ftest_oracle_write_heartbeat(void);
 void ftest_oracle_write_dumps(GameTurn tick);
 void ftest_oracle_close(void);
 
+// --- Creature-shadow oracle (keeper-rx docs/design/creature-shadows.md slice 3) ---------------------
+// A SEPARATE dump file (oracle_creature_shadow.jsonl) grounding find_closest_lights / create_shadows. It is
+// armed for exactly ONE rendered frame: the caller (the parity ftest) calls ftest_oracle_shadow_begin()
+// right before the target frame's keeper_screen_redraw() and ftest_oracle_shadow_close() right after, so the
+// two writers below — called in place from engine_render.c's shadow path — emit one frame's rows and no
+// more. Both writers are no-ops until begin() opens the file, so they are safe to leave compiled into the
+// render path unconditionally (behind FUNCTESTING). Struct params are forward-declared here (pointers only);
+// the .c pulls in their full definitions.
+struct Thing;
+struct Coord3d;
+struct EngineCoord;
+
+void ftest_oracle_shadow_begin(void);
+void ftest_oracle_shadow_close(void);
+
+// One row per creature that reaches the shadow cast, from find_closest_lights: the ordered candidate light
+// list the walk visits (static list then dynamic list, in next_in_list order) and the kept nearest lights in
+// slot order. keeper-rx's ShadowLights.NearestN(creature, candidates, n) must reproduce `kept` exactly.
+//   kept  — the nlgt.coord[] array (Coord3d), the first `count` of which were kept.
+//   n     — settings.video_shadows (the keep-N the pick used).
+void ftest_oracle_write_shadow_selection(
+    const struct Thing* thing, const struct Coord3d* kept, int count, int n);
+
+// One row per (creature, kept light) from create_shadows, captured BEFORE rotpers (so the corner
+// displacements are the raw FROM_FIXED offsets, not the camera-projected view coords). keeper-rx's
+// CreatureShadow.Cast(creature, light, dims…) must reproduce sh_angle/sprite_angle/dist_sq and the four
+// corner displacements. c1..c4 are the four EngineCoord corners; base_x/base_z are ecor->x/ecor->z, so the
+// dumped displacement is (cK->x - base_x, cK->z - base_z).
+void ftest_oracle_write_shadow_geometry(
+    const struct Thing* thing, const struct Coord3d* light,
+    int sh_angle, int sprite_angle, long dist_sq,
+    int dim_ow, int dim_oh, int dim_tw, int dim_th, int animation_sprite, int current_frame,
+    int base_x, int base_z,
+    const struct EngineCoord* c1, const struct EngineCoord* c2,
+    const struct EngineCoord* c3, const struct EngineCoord* c4);
+
 #ifdef __cplusplus
 }
 #endif

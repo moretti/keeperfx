@@ -64,6 +64,12 @@
 #include "vidfade.h"
 #include "vidmode.h"
 
+#ifdef FUNCTESTING
+// keeper-rx creature-shadow oracle (docs/design/creature-shadows.md slice 3): the shadow path calls these to
+// dump find_closest_lights / create_shadows ground truth. Both no-op unless the parity ftest armed the frame.
+#include "ftests/tests/ftest_oracle_spike.h"
+#endif
+
 #include "post_inc.h"
 
 #ifdef __cplusplus
@@ -3994,6 +4000,14 @@ static void create_shadows(struct Thing *thing, struct EngineCoord *ecor, struct
         ecor4.x = base_x + FROM_FIXED(right_x - near_x);
         ecor4.y = base_y;
         ecor4.z = base_z - FROM_FIXED(right_y + near_y);
+
+#ifdef FUNCTESTING
+        // keeper-rx creature-shadow oracle: dump BEFORE rotpers so the corner offsets are the raw FROM_FIXED
+        // displacements, not the camera-projected view coords. No-op unless the frame was armed.
+        ftest_oracle_write_shadow_geometry(thing, pos, sh_angle, sprite_angle, dist_sq,
+            dim_ow, dim_oh, dim_tw, dim_th, animation_sprite, current_frame,
+            base_x, base_z, &ecor1, &ecor2, &ecor3, &ecor4);
+#endif
     }
 
     rotpers(&ecor1, &camera_matrix);
@@ -8789,6 +8803,10 @@ static void do_map_who_for_thing(struct Thing *thing)
             if ((spr != NULL) && ((spr->frame_flags & FFL_NoShadows) == 0))
             {
                 count = find_closest_lights(&thing->mappos, &nearlgt);
+#ifdef FUNCTESTING
+                // keeper-rx creature-shadow oracle: one selection row per casting creature. No-op unless armed.
+                ftest_oracle_write_shadow_selection(thing, nearlgt.coord, count, settings.video_shadows);
+#endif
                 for (i = 0; i < count; i++)
                 {
                     create_shadows(thing, &ecor, &nearlgt.coord[i]);

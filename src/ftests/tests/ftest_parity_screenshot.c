@@ -109,6 +109,26 @@ static TbBool parity_oracle_enabled(void)
     return v != NULL && v[0] == '1';
 }
 
+// Optional: KEEPERFX_PARITY_SHADOW_ORACLE=1 arms the creature-shadow oracle (keeper-rx
+// docs/design/creature-shadows.md slice 3) for the single frame drawn at PARITY_SHADOW_ORACLE_TICK. The
+// shadow path (engine_render.c) then dumps find_closest_lights / create_shadows ground truth to
+// oracle_creature_shadow.jsonl. Unlike the heart-beat oracle this needs a scene WITH creatures near lights
+// (e.g. keeper-rx level 9011, the CreatureShadowScene) — do NOT combine with KEEPERFX_PARITY_NO_CREATURES.
+static TbBool parity_shadow_oracle_enabled(void)
+{
+    const char* v = getenv("KEEPERFX_PARITY_SHADOW_ORACLE");
+    return v != NULL && v[0] == '1';
+}
+
+// The shot the shadow dump is armed around (one of PARITY_SHOT_TICKS, so a frame is drawn there). By that
+// turn the spawned imps have settled onto the claimed floor around the heart, casting real shadows.
+#define PARITY_SHADOW_ORACLE_TICK 18
+
+// The keep-N the shadow capture forces (settings.video_shadows), so the golden exercises up to three kept
+// lights per creature — the front-insert quirk create_shadows/find_closest_lights only shows at N>1. 3 is
+// the DK maximum (settings clamps video_shadows to [0,3]). keeper-rx reads the N back from each row's "n".
+#define PARITY_SHADOW_ORACLE_N 3
+
 // Optional: KEEPERFX_PARITY_FOCUS_OFFSET_STL="dx,dy" shifts the forced camera off the heart by (dx,dy)
 // subtiles (north is -y), so a scene can frame a different part of the map — e.g. push north to bring the
 // heart room's wall torches into shot. Unset → the camera stays heart-centred.
@@ -446,6 +466,10 @@ FTestActionResult ftest_parity_screenshot_action001__capture(struct FTestActionA
         // arrays. Flicker is already frozen and the mouse suspended above, matching the standalone spike.
         if (parity_oracle_enabled())
             ftest_oracle_begin(PARITY_ORACLE_TICK);
+        // Force the shadow keep-N so the creature-shadow golden is independent of the persisted config's
+        // `shadows` setting (0 would draw no shadows at all, and the pick's kept-N must match keeper-rx's).
+        if (parity_shadow_oracle_enabled())
+            settings.video_shadows = PARITY_SHADOW_ORACLE_N;
         vars->setup_done = true;
     }
 
@@ -546,7 +570,17 @@ FTestActionResult ftest_parity_screenshot_action001__capture(struct FTestActionA
         update_light_render_area();
         // The ftest fires in gameplay_loop_logic, before gameplay_loop_draw, so the on-screen frame is
         // still the previous turn's. Force a redraw so the captured PNG is exactly this turn's state.
+        //
+        // Arm the creature-shadow oracle around THIS one redraw (and only at the shadow tick): the shadow
+        // path dumps as create_shadows/find_closest_lights fire inside keeper_screen_redraw, then we close it,
+        // so exactly one frame's rows land — no per-frame duplication across the other shot ticks.
+        TbBool shadow_dump_now =
+            parity_shadow_oracle_enabled() && (tick == PARITY_SHADOW_ORACLE_TICK);
+        if (shadow_dump_now)
+            ftest_oracle_shadow_begin();
         keeper_screen_redraw();
+        if (shadow_dump_now)
+            ftest_oracle_shadow_close();
 
         LevelNumber map = get_loaded_level_number();
         int width = (lbDrawSurface != NULL) ? lbDrawSurface->w : 0;
