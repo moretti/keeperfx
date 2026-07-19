@@ -112,6 +112,11 @@ static void jobs_clear_creatures(struct Thing* skip_imp)
 //   dig_kind/dig_owner         the fixed dig target (DIG_SLB): earth → path (dug) → claimed, so the dig/claim
 //                              terrain transition is captured even though working_stl is not the dig target
 //   total_area                 dungeon->total_area         (bumps on the claim)
+//   thing_index/creation_turn/random_seed  the imp's index, creation gameturn, and per-thing RNG seed —
+//                              dumped so keeper-rx can derive-and-verify the seed (ADR-0028): the seed is
+//                              index*9377 + 9439 + creation_turn. Under FUNCTESTING the series is frozen
+//                              (LbRandomSeries skips the advance), so THING_RANDOM(thing,R) == seed % R every
+//                              draw and the seed never changes for the imp's life.
 static void jobs_dump(FILE* f, struct Thing* imp)
 {
     struct CreatureControl* cctrl = creature_control_get_from_thing(imp);
@@ -126,13 +131,15 @@ static void jobs_dump(FILE* f, struct Thing* imp)
         "\"instance_id\":%d,\"inst_turn\":%d,\"inst_action_turns\":%d,"
         "\"consecutive_reinforcements\":%d,\"last_did_job\":%d,"
         "\"work_slb_x\":%d,\"work_slb_y\":%d,\"block_kind\":%d,\"block_owner\":%d,"
-        "\"dig_kind\":%d,\"dig_owner\":%d,\"dig_health\":%d,\"total_area\":%ld}\n",
+        "\"dig_kind\":%d,\"dig_owner\":%d,\"dig_health\":%d,\"total_area\":%ld,"
+        "\"thing_index\":%d,\"creation_turn\":%ld,\"random_seed\":%u}\n",
         STARTER_JOBS_ORACLE_VERSION, (long)get_gameturn(),
         (long)imp->mappos.x.val, (long)imp->mappos.y.val, (int)imp->active_state,
         (int)cctrl->instance_id, (int)cctrl->inst_turn, (int)cctrl->inst_action_turns,
         (int)cctrl->digger.consecutive_reinforcements, (int)cctrl->digger.last_did_job,
         (int)wslb_x, (int)wslb_y, (int)slb->kind, (int)slabmap_owner(slb),
-        (int)dig->kind, (int)slabmap_owner(dig), (int)dig->health, (long)dungeon->total_area);
+        (int)dig->kind, (int)slabmap_owner(dig), (int)dig->health, (long)dungeon->total_area,
+        (int)imp->index, (long)imp->creation_turn, (unsigned)imp->random_seed);
 }
 
 FTestActionResult ftest_starter_dungeon_jobs_oracle_action__run(struct FTestActionArgs* const args);
